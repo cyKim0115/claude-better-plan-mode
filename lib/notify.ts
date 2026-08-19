@@ -54,6 +54,57 @@ export async function notifyPlanReady(plan: Plan, port: number): Promise<void> {
   }
 }
 
+/** 계획표 수정(revise) 완료 알림 — 어떤 계획표가 수정됐는지 보고. fire-and-forget으로 호출할 것. */
+export async function notifyPlanRevised(plan: Plan, appliedCount: number, port: number): Promise<void> {
+  const webhook = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhook) return;
+
+  try {
+    const publicBase = await getTunnelUrl(port);
+    const base = publicBase ?? `http://localhost:${port}`;
+    const link = `${base}/plan/${plan.id}`;
+
+    // 이번 리비전의 변경 요약 (history 마지막 항목)
+    const latest = plan.history[plan.history.length - 1];
+    const summary =
+      latest && latest.revision === plan.revision ? latest.summary : "변경 요약 없음";
+
+    const payload = {
+      content: `✏️ 계획표 수정 완료: **${plan.title}** (rev ${plan.revision})\n${link}`,
+      embeds: [
+        {
+          title: `${plan.title} — 리비전 ${plan.revision}`,
+          url: link,
+          description: summary.length > 1800 ? `${summary.slice(0, 1800)}…` : summary,
+          color: 0xf1c40f,
+          fields: [
+            { name: "반영된 코멘트", value: String(appliedCount), inline: true },
+            { name: "태스크", value: String(plan.tasks.length), inline: true },
+            { name: "리비전", value: String(plan.revision), inline: true },
+          ],
+          footer: publicBase
+            ? { text: "ngrok 터널 링크 — 서버가 켜져 있는 동안만 유효" }
+            : { text: "로컬 링크 (ngrok 터널 없음)" },
+          timestamp: plan.updatedAt,
+        },
+      ],
+    };
+
+    const res = await fetch(webhook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      console.warn(`[notify] 수정 완료 웹훅 실패: ${res.status} ${await res.text()}`);
+    } else {
+      console.log(`[notify] 수정 완료 웹훅 전송: ${link} (rev ${plan.revision})`);
+    }
+  } catch (e) {
+    console.warn(`[notify] 수정 완료 웹훅 오류: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 /** 착수(런) 완료 알림 — 수행 결과 요약 포함. fire-and-forget으로 호출할 것. */
 export async function notifyRunComplete(plan: Plan, run: Run, port: number): Promise<void> {
   const webhook = process.env.DISCORD_WEBHOOK_URL;

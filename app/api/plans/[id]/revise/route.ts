@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPlan, savePlan } from "@/lib/store";
 import { revisePlan } from "@/lib/agent";
+import { notifyPlanRevised } from "@/lib/notify";
 
 export const maxDuration = 600;
 
-export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const plan = await getPlan(id);
   if (!plan) return NextResponse.json({ error: "not found" }, { status: 404 });
@@ -15,6 +16,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   try {
     const revised = await revisePlan(plan, open);
     await savePlan(revised);
+    void notifyPlanRevised(revised, open.length, Number(req.nextUrl.port) || 3000);
     return NextResponse.json(revised);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
