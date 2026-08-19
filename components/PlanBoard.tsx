@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Plan, PlanComment, PlanTask, RunLogLine } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Plan, PlanComment, PlanTask, RunLogLine, TaskStatus } from "@/lib/types";
 
 interface RunView {
   id: string;
@@ -11,6 +11,8 @@ interface RunView {
   endedAt?: string;
   logLength: number;
 }
+
+const ACTIVE_RUN_STATUSES = ["starting", "running"];
 
 export default function PlanBoard({ planId }: { planId: string }) {
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -38,12 +40,16 @@ export default function PlanBoard({ planId }: { planId: string }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // 실행 중이거나 플랜 생성 중이면 주기적으로 갱신
+  // 서버에서 진행 중인 run (다른 탭에서 착수했거나 새로고침한 경우도 잡힌다)
+  const liveRun = runs.find((r) => ACTIVE_RUN_STATUSES.includes(r.status)) ?? null;
+
+  // 실행/생성 중에는 2초, 아니면 10초 간격으로 갱신.
+  // 느린 폴링이 있어야 MCP나 다른 탭에서 착수한 run도 보드가 알아챈다.
+  const busy = Boolean(activeRunId || liveRun || plan?.generating);
   useEffect(() => {
-    if (!activeRunId && !plan?.generating) return;
-    const t = setInterval(load, 3000);
+    const t = setInterval(load, busy ? 2000 : 10000);
     return () => clearInterval(t);
-  }, [activeRunId, plan?.generating, load]);
+  }, [busy, load]);
 
   const openComments = plan?.comments.filter((c) => !c.resolved) ?? [];
 
@@ -111,8 +117,12 @@ export default function PlanBoard({ planId }: { planId: string }) {
 
   const taskById = new Map(plan.tasks.map((t) => [t.id, t]));
 
+  // 사이드 진행 패널이 볼 run — 진행 중인 것 우선, 없으면 가장 최근 run
+  const focusRun = runs.find((r) => r.id === activeRunId) ?? liveRun ?? runs[0] ?? null;
+
   return (
-    <div>
+    <div className="board-layout">
+      <div className="board-main">
       <div className="row spread">
         <div>
           <h1>{plan.title}</h1>
@@ -208,8 +218,107 @@ export default function PlanBoard({ planId }: { planId: string }) {
         .map((rid) => (
           <RunPanel key={rid} runId={rid} onFinished={() => { setActiveRunId(null); load(true); }} />
         ))}
+      </div>
+
+      <aside className="board-rail">
+        {focusRun ? (
+          <RunProgress
+            run={focusRun}
+            tasks={focusRun.taskIds.map((id) => taskById.get(id)).filter((t): t is PlanTask => Boolean(t))}
+          />
+        ) : (
+          <div className="card progress-card">
+            <div className="progress-head">진행 현황</div>
+            <p className="muted small" style={{ margin: 0 }}>
+              태스크를 착수하면 여기에서 진행 상황을 볼 수 있습니다.
+            </p>
+          </div>
+        )}
+      </aside>
     </div>
   );
+}
+
+/** 착수 후 진행 현황 — 어떤 태스크가 끝났고 지금 무엇을 하고 있는지 한눈에 */
+function RunProgress({ run, tasks }: { run: RunView; tasks: PlanTask[] }) {
+  const live = ACTIVE_RUN_STATUSES.includes(run.status);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { done: 0, failed: 0, running: 0, queued: 0, other: 0 };
+    for (const t of tasks) {
+      if (t.status in c) c[t.status] += 1;
+      else c.other += 1;
+    }
+    return c;
+  }, [tasks]);
+
+  const total = tasks.length;
+  const settled = counts.done + counts.failed;
+  const percent = total === 0 ? 0 : Math.round((settled / total) * 100);
+
+  const endedMs = run.endedAt ? +new Date(run.endedAt) : now;
+  const elapsedSec = Math.max(0, Math.round((endedMs - +new Date(run.startedAt)) / 1000));
+  const elapsed = elapsedSec < 60 ? `${elapsedSec}초` : `${Math.floor(elapsedSec / 60)}분 ${elapsedSec % 60}초`;
+
+  const badgeClass = run.status === "succeeded" ? "done" : run.status === "failed" ? "failed" : "running";
+
+  return (
+    <div className="card progress-card">
+      <div className="row spread">
+        <span className="progress-head">진행 현황</span>
+        <span className={`badge ${badgeClass}`}>
+          {live && <span className="spinner" style={{ marginRight: 6 }} />}
+          {run.status}
+        </span>
+      </div>
+
+      <div className="progress-bar" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+        <span className="progress-fill done" style={{ width: `${total === 0 ? 0 : (counts.done / total) * 100}%` }} />
+        <span className="progress-fill failed" style={{ width: `${total === 0 ? 0 : (counts.failed / total) * 100}%` }} />
+      </div>
+
+      <div className="row spread small">
+        <span>
+          <strong>{settled}</strong> / {total} 완료 ({percent}%)
+        </span>
+        <span className="muted">{elapsed}</span>
+      </div>
+
+      <div className="progress-tasks">
+        {tasks.map((t, i) => (
+          <div key={t.id} className={`progress-task ${t.status}`}>
+            <span className="progress-dot" aria-hidden="true">
+              {t.status === "running" ? <span className="spinner tiny-spinner" /> : statusMark(t.status)}
+            </span>
+            <span className="progress-task-title" title={t.title}>
+              {i + 1}. {t.title}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="row small muted" style={{ gap: 10 }}>
+        <span>Run {run.id.slice(0, 8)}</span>
+        {counts.failed > 0 && <span style={{ color: "var(--red)" }}>실패 {counts.failed}</span>}
+        {counts.queued > 0 && <span>대기 {counts.queued}</span>}
+      </div>
+    </div>
+  );
+}
+
+function statusMark(status: TaskStatus): string {
+  if (status === "done") return "✓";
+  if (status === "failed") return "✕";
+  if (status === "queued") return "·";
+  if (status === "skipped") return "–";
+  return "·";
 }
 
 function TaskCard({
@@ -234,13 +343,16 @@ function TaskCard({
   }
 
   return (
-    <div className={`task ${checked ? "selected" : ""} ${task.status === "running" ? "running" : ""}`}>
+    <div className={`task ${checked ? "selected" : ""} ${task.status}`}>
       <div className="task-head">
         <input type="checkbox" checked={checked} onChange={onToggle} disabled={!executable} title={executable ? "착수 대상으로 선택" : "이미 처리된 태스크"} />
         <div className="grow">
           <div className="row spread">
             <span className="task-title">{task.title}</span>
-            <span className={`badge ${task.status}`}>{task.status}</span>
+            <span className={`badge ${task.status}`}>
+              {task.status === "running" && <span className="spinner" style={{ marginRight: 6 }} />}
+              {task.status}
+            </span>
           </div>
           <p className="task-desc">{task.description}</p>
           <div className="task-meta">
@@ -296,6 +408,7 @@ function RunPanel({ runId, onFinished }: { runId: string; onFinished: () => void
       if (stopped) return;
       try {
         const res = await fetch(`/api/runs/${runId}?since=${cursorRef.current}`);
+        if (stopped) return; // 정리된 뒤 도착한 응답은 버린다 (StrictMode 중복 append 방지)
         if (res.status === 404) {
           // 서버 재시작 등으로 인메모리 기록이 사라진 경우
           setStatus("expired");
@@ -304,6 +417,7 @@ function RunPanel({ runId, onFinished }: { runId: string; onFinished: () => void
         }
         if (res.ok) {
           const data = await res.json();
+          if (stopped) return;
           setStatus(data.status);
           if (data.log.length > 0) {
             setLog((prev) => [...prev, ...data.log]);
