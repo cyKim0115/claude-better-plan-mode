@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(npx tsc --noEmit:*)",
+      "Bash(npm run build:*)",
+      "Bash(node --version)",
+      "Bash(npm --version)",
+      "Bash(netstat -ano:*)",
+      "Bash(curl -s -o /dev/null -w:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh api --method GET:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./data/**)",
+      "Read(./node_modules/**)",
+      "Read(./.next/**)",
+      "Read(./package-lock.json)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .claude/hooks/rule-compliance-stop.ps1",
+            "timeout": 60,
+            "statusMessage": "프로젝트 규칙 준수 검사"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,3 +7,6 @@ data/
 !.env.example
 next-env.d.ts
 *.tsbuildinfo
+
+# Claude Code 로컬 전용 설정 (개인 권한 등)
+.claude/settings.local.json
