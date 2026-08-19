@@ -12,6 +12,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       planId: id,
       taskIds: body.taskIds,
       skipPermissions: body.skipPermissions,
+      port: Number(req.nextUrl.port) || 3000,
     });
     return NextResponse.json({ runId: run.id, status: run.status });
   } catch (e) {

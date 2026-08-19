@@ -21,13 +21,19 @@ export default function PlanBoard({ planId }: { planId: string }) {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [skipPerms, setSkipPerms] = useState(false);
   const [planComment, setPlanComment] = useState("");
+  const defaultsAppliedRef = useRef(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (applyDefaults = false) => {
     const res = await fetch(`/api/plans/${planId}`);
     if (!res.ok) return;
     const data = await res.json();
     setPlan(data.plan);
     setRuns(data.runs ?? []);
+    // 착수 가능한(pending) 태스크는 기본 체크 상태로 시작
+    if ((applyDefaults || !defaultsAppliedRef.current) && data.plan && !data.plan.generating) {
+      defaultsAppliedRef.current = true;
+      setSelected(new Set((data.plan.tasks as PlanTask[]).filter((t) => t.status === "pending").map((t) => t.id)));
+    }
   }, [planId]);
 
   useEffect(() => { load(); }, [load]);
@@ -64,7 +70,8 @@ export default function PlanBoard({ planId }: { planId: string }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "반영 실패");
       setPlan(data);
-      setSelected(new Set());
+      // 개정된 계획에서도 pending 태스크는 기본 체크
+      setSelected(new Set(((data.tasks ?? []) as PlanTask[]).filter((t) => t.status === "pending").map((t) => t.id)));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -199,7 +206,7 @@ export default function PlanBoard({ planId }: { planId: string }) {
       {(activeRunId ? [activeRunId, ...runs.map((r) => r.id).filter((id) => id !== activeRunId)] : runs.map((r) => r.id))
         .slice(0, 5)
         .map((rid) => (
-          <RunPanel key={rid} runId={rid} onFinished={() => { setActiveRunId(null); load(); }} />
+          <RunPanel key={rid} runId={rid} onFinished={() => { setActiveRunId(null); load(true); }} />
         ))}
     </div>
   );

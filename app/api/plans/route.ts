@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listPlans, savePlan, getPlan, newId } from "@/lib/store";
 import { generatePlan } from "@/lib/agent";
+import { notifyPlanReady } from "@/lib/notify";
 import type { Plan } from "@/lib/types";
 
 export const maxDuration = 600;
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest) {
   }
   const goal = body.goal.trim();
   const workdir = body.workdir?.trim() ?? "";
+  const port = Number(req.nextUrl.port) || 3000;
 
   // 비동기 모드: 스텁을 즉시 저장·반환하고 백그라운드에서 생성 (MCP 등 툴 호출용)
   if (body.async) {
@@ -53,14 +55,16 @@ export async function POST(req: NextRequest) {
       try {
         const generated = await generatePlan(goal, workdir);
         const current = await getPlan(stub.id);
-        await savePlan({
+        const done: Plan = {
           ...generated,
           id: stub.id,
           createdAt: stub.createdAt,
           // 생성 중에 달린 코멘트는 보존
           comments: current?.comments ?? [],
           generating: false,
-        });
+        };
+        await savePlan(done);
+        void notifyPlanReady(done, port);
       } catch (e) {
         const current = await getPlan(stub.id);
         if (current) {
@@ -77,6 +81,7 @@ export async function POST(req: NextRequest) {
   try {
     const plan = await generatePlan(goal, workdir);
     await savePlan(plan);
+    void notifyPlanReady(plan, port);
     return NextResponse.json(plan);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });

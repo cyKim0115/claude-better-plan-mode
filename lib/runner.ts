@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import type { Plan, Run, RunLogLine } from "./types";
 import { getPlan, savePlan, newId } from "./store";
+import { notifyRunComplete } from "./notify";
 
 /**
  * 실행 중인 런의 인메모리 레지스트리.
@@ -91,6 +92,8 @@ export interface StartRunOptions {
   taskIds: string[];
   /** true면 --dangerously-skip-permissions (기본 acceptEdits) */
   skipPermissions?: boolean;
+  /** 완료 웹훅 링크 생성에 쓸 웹 서버 포트 (기본 3000) */
+  port?: number;
 }
 
 export async function startRun(opts: StartRunOptions): Promise<Run> {
@@ -157,11 +160,14 @@ export async function startRun(opts: StartRunOptions): Promise<Run> {
     if (text) pushLog(run, "stderr", text.slice(0, 1000));
   });
 
+  const port = opts.port ?? 3000;
+
   child.on("error", async (err) => {
     pushLog(run, "stderr", `claude CLI 실행 실패: ${err.message} — claude가 PATH에 있는지 확인하세요.`);
     run.status = "failed";
     run.endedAt = new Date().toISOString();
-    await finalizeTasks(run, false);
+    const updated = await finalizeTasks(run, false);
+    if (updated) void notifyRunComplete(updated, run, port);
   });
 
   child.on("close", async (code) => {
@@ -170,19 +176,21 @@ export async function startRun(opts: StartRunOptions): Promise<Run> {
     run.status = ok ? "succeeded" : "failed";
     run.endedAt = new Date().toISOString();
     pushLog(run, "info", `프로세스 종료 (exit ${code})`);
-    await finalizeTasks(run, ok);
+    const updated = await finalizeTasks(run, ok);
+    if (updated) void notifyRunComplete(updated, run, port);
   });
 
   return run;
 }
 
-async function finalizeTasks(run: Run, ok: boolean) {
+async function finalizeTasks(run: Run, ok: boolean): Promise<Plan | null> {
   const plan = await getPlan(run.planId);
-  if (!plan) return;
+  if (!plan) return null;
   for (const t of plan.tasks) {
     if (run.taskIds.includes(t.id) && t.status === "running") {
       t.status = ok ? "done" : "failed";
     }
   }
   await savePlan(plan);
+  return plan;
 }
