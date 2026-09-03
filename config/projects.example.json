@@ -1,0 +1,14 @@
+{
+  "TeenipingTycoon": {
+    "path": "/Users/cykim/repo/TeenipingTycoon",
+    "baseBranch": "master",
+    "allowDirect": false,
+    "unityMcpPort": 8085,
+    "unityPath": "/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/MacOS/Unity"
+  },
+  "MyUtil": {
+    "path": "/Users/cykim/repo/MyUtil",
+    "baseBranch": "main",
+    "allowDirect": false
+  }
+}

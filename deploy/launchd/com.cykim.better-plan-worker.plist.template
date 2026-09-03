@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cykim.better-plan-worker</string>
+
+  <!-- LaunchAgent(유저 세션)로 띄워야 GUI 세션·화면 기록 권한을 가진다. LaunchDaemon으로 올리지 말 것. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/deploy/launchd/run-worker.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PLANMODE_MODE</key>
+    <string>start</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__REPO__/deploy/launchd/logs/worker.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO__/deploy/launchd/logs/worker.err.log</string>
+</dict>
+</plist>
