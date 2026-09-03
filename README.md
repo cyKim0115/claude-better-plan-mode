@@ -2,7 +2,22 @@
 
 상호작용 가능한 웹 플랜 모드. 목표를 적으면 Claude가 실행 계획을 세우고, 계획표에 코멘트/첨언을 달아 반영시키고, 원하는 태스크만 체크해서 부분 착수까지 시키는 루프를 웹 UI로 돌립니다.
 
-> 📖 설치·사용 가이드(스크린샷 포함)는 [`docs/site/`](docs/site/README.md)에 있습니다. GitBook 소스 루트는 `.gitbook.yaml`로 지정되어 있어 GitBook.com에 깃 연동하면 바로 사이트가 됩니다.
+**📖 문서 사이트: https://cykim.gitbook.io/claude-better-plan**
+
+스크린샷과 함께 보는 설치·사용 가이드입니다. 아래는 빠른 요약이고, 자세한 내용은 문서 사이트를 보세요.
+
+| | |
+|---|---|
+| [설치](https://cykim.gitbook.io/claude-better-plan/getting-started/install) | Node·Claude CLI 준비부터 첫 실행까지 |
+| [첫 플랜 만들기](https://cykim.gitbook.io/claude-better-plan/getting-started/first-plan) | 목표 입력 → 플랜 생성 흐름 |
+| [보드 둘러보기](https://cykim.gitbook.io/claude-better-plan/guide/board) | 계획표 화면 구성 |
+| [코멘트와 반영](https://cykim.gitbook.io/claude-better-plan/guide/comments) | 첨언 → revision 루프 |
+| [부분 착수](https://cykim.gitbook.io/claude-better-plan/guide/execute) | 선택한 태스크만 실행 |
+| [MCP 연동](https://cykim.gitbook.io/claude-better-plan/integration/mcp) | 필요할 때만 보드 켜기 |
+| [원격 접근](https://cykim.gitbook.io/claude-better-plan/integration/remote) | 다른 기기에서 보기 |
+| [REST API](https://cykim.gitbook.io/claude-better-plan/reference/api) · [아키텍처](https://cykim.gitbook.io/claude-better-plan/reference/architecture) | 내부 구조 |
+
+문서 원본은 [`docs/site/`](docs/site/README.md)에 있고, `.gitbook.yaml`을 통해 GitBook과 Git Sync로 연결되어 있습니다 — 이 리포에 머지되면 사이트에 반영됩니다.
 
 ```
 목표 입력 → 플랜 생성 (Agent SDK, 코드베이스 읽기 전용 탐색)
