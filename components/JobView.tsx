@@ -1,0 +1,117 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { Job, RunLogLine } from "@/lib/types";
+import { statusBadge } from "./JobList";
+
+type JobMeta = Omit<Job, "log"> & { logLength: number; log: RunLogLine[] };
+
+export default function JobView({ jobId }: { jobId: string }) {
+  const [meta, setMeta] = useState<Omit<JobMeta, "log"> | null>(null);
+  const [log, setLog] = useState<RunLogLine[]>([]);
+  const [missing, setMissing] = useState(false);
+  const cursorRef = useRef(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  useEffect(() => {
+    let stopped = false;
+    async function poll() {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/api/jobs/${jobId}?since=${cursorRef.current}`);
+        if (stopped) return;
+        if (res.status === 404) {
+          setMissing(true);
+          return;
+        }
+        if (res.ok) {
+          const data = (await res.json()) as JobMeta;
+          if (stopped) return;
+          const { log: newLines, ...rest } = data;
+          setMeta(rest);
+          if (newLines.length > 0) {
+            setLog((prev) => [...prev, ...newLines]);
+            cursorRef.current = data.logLength;
+          }
+          if (["succeeded", "failed", "cancelled"].includes(data.status)) return;
+        }
+      } catch {
+        /* 서버 재시작 등 — 다음 폴링에서 재시도 */
+      }
+      if (!stopped) setTimeout(poll, 1500);
+    }
+    poll();
+    return () => {
+      stopped = true;
+    };
+  }, [jobId]);
+
+  useEffect(() => {
+    if (autoScroll) boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
+  }, [log, autoScroll]);
+
+  async function cancel() {
+    await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+  }
+
+  if (missing) return <div className="error-box">잡을 찾을 수 없습니다: {jobId}</div>;
+  if (!meta) return <p className="muted">불러오는 중…</p>;
+
+  const active = meta.status === "queued" || meta.status === "running";
+
+  return (
+    <div>
+      <div className="row spread" style={{ marginBottom: 8 }}>
+        <div>
+          <a href="/jobs" className="small muted">← 잡 목록</a>
+          <h1 style={{ marginTop: 4 }}>{meta.title}</h1>
+          <div className="row small muted">
+            <span>{meta.project}</span>
+            <span>· {meta.mode === "pr" ? "PR 생성" : `${meta.baseBranch} 직푸시`}</span>
+            {meta.branch && <span>· {meta.branch}</span>}
+            <span>· job {meta.id.slice(0, 8)}</span>
+          </div>
+        </div>
+        <div className="row">
+          <span className={`badge ${statusBadge(meta.status)}`}>
+            {meta.status === "running" && <span className="spinner" style={{ marginRight: 6 }} />}
+            {meta.status} · {meta.stage}
+          </span>
+          {active && <button className="danger tiny" onClick={cancel}>취소</button>}
+        </div>
+      </div>
+
+      {(meta.prUrl || meta.error || meta.worktree) && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          {meta.prUrl && (
+            <div>PR: <a href={meta.prUrl} target="_blank" rel="noreferrer">{meta.prUrl}</a></div>
+          )}
+          {meta.commitCount !== undefined && <div className="small muted">커밋 {meta.commitCount}개</div>}
+          {meta.worktree && <div className="small muted">worktree: {meta.worktree}</div>}
+          {meta.error && <div style={{ color: "var(--red)", marginTop: 6 }}>{meta.error}</div>}
+        </div>
+      )}
+
+      <details className="card" style={{ marginBottom: 10 }}>
+        <summary className="small muted" style={{ cursor: "pointer" }}>지시문 보기</summary>
+        <div className="log" style={{ marginTop: 8, maxHeight: 220 }}>{meta.prompt}</div>
+      </details>
+
+      <div className="row spread" style={{ marginBottom: 6 }}>
+        <strong className="small">로그</strong>
+        <label className="small muted" style={{ cursor: "pointer" }}>
+          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /> 자동 스크롤
+        </label>
+      </div>
+      <div className="log" ref={boxRef} style={{ maxHeight: "60vh" }}>
+        {log.length === 0 && <span className="muted">로그 대기 중…</span>}
+        {log.map((l, i) => (
+          <div key={i} className={`log-line ${l.kind}`}>
+            <span className="k">[{l.kind}]</span>{l.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

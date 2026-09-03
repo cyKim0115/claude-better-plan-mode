@@ -13,6 +13,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="topbar">
           <a href="/" className="brand">◆ Better Plan Mode</a>
           <span className="brand-sub">plan → comment → revise → execute</span>
+          <nav className="topnav">
+            <a href="/">플랜</a>
+            <a href="/jobs">워커 잡</a>
+          </nav>
         </header>
         <main className="container">{children}</main>
       </body>
