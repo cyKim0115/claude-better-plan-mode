@@ -87,13 +87,56 @@ echo "Slack" > /Users/cykim/repo/TeenipingTycoon/Secrets/webhook_active_provider
 
 `Secrets/`가 `.gitignore`에 있는지 확인하세요.
 
-### 1-7. Windows 메인 PC
+### 1-7. Windows 메인 PC — MCP 연결
 
-```
+Windows에도 이 리포가 clone돼 있어야 합니다 (`C:\Users\cykim\repo\claude-better-plan-mode`, `npm install` 완료). `<WORKER_TOKEN>`은 Mac `.env.local`의 값입니다.
+
+**Claude Code** — HTTP로 직접 붙습니다 (PowerShell):
+
+```powershell
 claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp --header "Authorization: Bearer <WORKER_TOKEN>" -s user
+claude mcp list        # mac-worker: ... - ✓ Connected 가 보여야 합니다
 ```
 
-`<WORKER_TOKEN>`은 Mac `.env.local`의 값. Parsec 클라이언트 설치, `http://macmini-macmini:3000/jobs` 북마크.
+`-s user`라 어느 폴더에서 열어도 보입니다. **이미 열려 있던 Claude Code 세션은 재시작**해야 툴이 잡힙니다.
+
+**Claude Desktop** — 헤더를 못 붙이므로 stdio 브리지(`mcp/worker-client.mjs`)를 씁니다. `%APPDATA%\Claude\claude_desktop_config.json`에:
+
+```json
+{
+  "mcpServers": {
+    "mac-worker": {
+      "command": "node",
+      "args": ["C:\\Users\\cykim\\repo\\claude-better-plan-mode\\mcp\\worker-client.mjs"],
+      "env": {
+        "WORKER_URL": "http://macmini-macmini:4000/mcp",
+        "WORKER_TOKEN": "<WORKER_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+저장 후 Claude Desktop을 완전히 종료(트레이 아이콘 → Quit)했다가 다시 켭니다. 설정 → 개발자(Developer)에서 `mac-worker`가 running이면 됩니다.
+
+Claude Code도 같은 브리지로 맞추고 싶으면:
+
+```powershell
+claude mcp add mac-worker -s user -e WORKER_URL=http://macmini-macmini:4000/mcp -e WORKER_TOKEN=<WORKER_TOKEN> -- node C:\Users\cykim\repo\claude-better-plan-mode\mcp\worker-client.mjs
+```
+
+### 1-8. Windows 메인 PC — 스킬 설치
+
+툴이 붙어도 Claude가 "어떻게 쓰는지"는 모릅니다. `skills/remote-worker`를 설치하면 워커에 시키는 흐름(프로젝트 확인 → 모드 → 지시문 → 제출 후 대기하지 않기 → 상태 보고)을 알고 움직입니다.
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
+Copy-Item -Recurse -Force C:\Users\cykim\repo\claude-better-plan-mode\skills\remote-worker "$env:USERPROFILE\.claude\skills\"
+```
+
+Claude Desktop은 설정 → 스킬 → 추가에서 같은 폴더를 지정합니다. 상세: `skills/README.md`.
+
+마지막으로 Parsec 클라이언트 설치, `http://macmini-macmini:3000/jobs` 북마크.
 
 세팅 끝. 이후 Mac은 전원만 켜져 있으면 됩니다.
 
@@ -167,8 +210,9 @@ cd ~/repo/claude-better-plan-mode && npm run worker
 | `WORKER_TOKEN이 없거나 너무 짧습니다` | `.env.local`에 16자 이상 토큰 |
 | `node/claude 을 PATH에서 찾지 못했습니다` | `deploy/launchd/run-worker.sh`의 PATH에 설치 경로 추가 |
 | 보드가 120초 내에 응답하지 않음 | `npm run build`가 안 됐거나 3000 포트 점유 (`lsof -i :3000`) |
-| Windows에서 401 | 토큰 불일치. `claude mcp remove mac-worker` 후 다시 add |
-| Windows에서 연결 거부 | Tailscale 양쪽 켜졌는지, `WORKER_BIND`가 `0.0.0.0`인지 |
+| Claude가 mac-worker를 모른다 | `claude mcp list`에 없음 → 1-7 다시. 있는데 못 쓰면 세션 재시작. 툴은 보이는데 엉뚱하게 쓰면 1-8 스킬 미설치 |
+| Windows에서 401 / `worker_unreachable`만 보임 | 토큰 불일치. `claude mcp remove mac-worker` 후 다시 add (Desktop은 config의 `WORKER_TOKEN` 수정 후 완전 재시작) |
+| Windows에서 연결 거부 | Tailscale 양쪽 켜졌는지, `WORKER_BIND`가 `0.0.0.0`인지, 브라우저에서 보드가 열리는지 |
 | `worker_screenshot` 실패 | 화면 기록 권한 / GUI 세션 없음(SSH로 띄웠을 때). launchd로 다시 |
 | PR 생성 실패, 브랜치는 push됨 | `gh auth login`. 브랜치는 이미 올라가 있으니 GitHub에서 수동 PR |
 | direct rebase 실패 | 충돌. worktree가 남아 있으니 Parsec으로 들어가 해결 후 수동 push |

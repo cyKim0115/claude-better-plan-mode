@@ -21,6 +21,8 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 | `components/JobList.tsx`, `JobView.tsx` | 워커 잡 목록·상세 UI |
 | `mcp/server.mjs` | MCP 서버(stdio) — 온디맨드 보드 서버 스폰, `plan_create` 등 툴 |
 | `mcp/worker.mjs` | 원격 워커 MCP 서버(Streamable HTTP, Bearer 토큰) — 보드 `/api/jobs` 프록시 |
+| `mcp/worker-client.mjs` | 메인 PC용 stdio 브리지 — Claude Desktop처럼 HTTP 헤더를 못 붙이는 호스트가 worker.mjs에 붙는 경로 |
+| `skills/` | 다른 기기에 설치하는 배포용 스킬 (`remote-worker`). 리포 작업 규칙은 `.claude/skills/` |
 | `config/projects.json` | 워커가 다룰 프로젝트 목록 (gitignore, 예시는 `projects.example.json`) |
 | `deploy/launchd/` | macOS LaunchAgent 등록 스크립트·템플릿 |
 

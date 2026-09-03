@@ -85,7 +85,9 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp \
   --header "Authorization: Bearer <WORKER_TOKEN>" -s user
 ```
 
-`macmini-macmini`는 Tailscale 이름이나 LAN IP입니다. 이후 어느 디렉터리에서든 Claude Code에 이렇게 말하면 됩니다.
+`macmini-macmini`는 Tailscale 이름이나 LAN IP입니다. Claude Desktop처럼 HTTP 헤더를 붙일 수 없는 호스트는 stdio 브리지 `mcp/worker-client.mjs`를 `WORKER_URL`·`WORKER_TOKEN` 환경변수와 함께 등록하세요. 붙인 뒤에는 `skills/remote-worker`를 `~/.claude/skills/`에 복사해 Claude가 워커 사용 흐름을 알게 합니다.
+
+이후 어느 디렉터리에서든 Claude Code에 이렇게 말하면 됩니다.
 
 > "mac-worker로 TeenipingTycoon에 로비 팝업 닫기 버튼 추가시켜. PR 모드로."
 
