@@ -15,6 +15,7 @@
 | [부분 착수](https://cykim.gitbook.io/claude-better-plan/guide/execute) | 선택한 태스크만 실행 |
 | [MCP 연동](https://cykim.gitbook.io/claude-better-plan/integration/mcp) | 필요할 때만 보드 켜기 |
 | [원격 접근](https://cykim.gitbook.io/claude-better-plan/integration/remote) | 다른 기기에서 보기 |
+| [원격 워커](https://cykim.gitbook.io/claude-better-plan/integration/worker) | 이 PC를 서브 PC로 — 다른 PC의 Claude가 MCP로 작업 제출·PR·웹훅 |
 | [REST API](https://cykim.gitbook.io/claude-better-plan/reference/api) · [아키텍처](https://cykim.gitbook.io/claude-better-plan/reference/architecture) | 내부 구조 |
 
 문서 원본은 [`docs/site/`](docs/site/README.md)에 있고, `.gitbook.yaml`을 통해 GitBook과 Git Sync로 연결되어 있습니다 — 이 리포에 머지되면 사이트에 반영됩니다.
@@ -83,9 +84,28 @@ npm run dev:lan    # 0.0.0.0 바인드
 - 같은 네트워크: `http://<이-PC의-IP>:3000`
 - 외부에서: Tailscale 같은 사설망 또는 `cloudflared tunnel`/`ngrok http 3000` 등의 터널 사용을 권장합니다. **인증이 없는 앱이므로 공인 인터넷에 그대로 노출하지 마세요** — 이 앱은 로컬에서 임의 코드 실행(claude CLI)을 트리거할 수 있습니다.
 
+## 원격 워커 — 이 PC를 서브 PC로
+
+다른 PC의 Claude Code가 **HTTP MCP**로 이 PC에 작업을 제출하면, worktree를 파서 `claude -p`를 돌리고 커밋 → (Unity 컴파일 검증) → PR 생성 또는 기본 브랜치 직푸시까지 끝낸 뒤 Slack/Discord로 알립니다. Unity처럼 프로젝트당 에디터 인스턴스가 하나뿐인 환경을 위한 구성입니다.
+
+```bash
+cp .env.example .env.local                          # WORKER_TOKEN 필수 (openssl rand -hex 24), SLACK_WEBHOOK_URL
+cp config/projects.example.json config/projects.json  # 프로젝트 키 → 경로·기본 브랜치·direct 허용 여부
+npm run build && npm run worker                     # 포트 4000. 보드(3000)는 자동으로 띄웁니다
+bash deploy/launchd/install.sh                      # macOS 상시 운영 (LaunchAgent, 재부팅 후 자동 복구)
+```
+
+메인 PC에서는 한 줄로 붙습니다.
+
+```bash
+claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp --header "Authorization: Bearer <WORKER_TOKEN>" -s user
+```
+
+툴: `worker_projects` · `job_submit`(즉시 jobId 반환) · `job_status` · `job_logs` · `job_list` · `job_cancel` · `worker_screenshot`. 진행 상황은 보드 `/jobs`에서도 볼 수 있습니다. 자세한 설정·운영은 [원격 워커 문서](https://cykim.gitbook.io/claude-better-plan/integration/worker)를 보세요.
+
 ## 저장 위치 / 제약
 
-- 플랜은 `data/plans/*.json`에 저장됩니다 (git-ignore됨). 백업/이동이 쉽습니다.
+- 플랜은 `data/plans/*.json`, 워커 잡은 `data/jobs/*.json`에 저장됩니다 (git-ignore됨). 백업/이동이 쉽습니다.
 - 실행(run) 로그는 서버 프로세스 메모리에만 있습니다. 서버 재시작 시 과거 실행 로그는 사라집니다(플랜/태스크 상태는 유지).
 - 단일 서버 프로세스 전제입니다 (`next dev` 또는 `next start` 하나만 띄우세요).
 
@@ -96,7 +116,13 @@ lib/types.ts    플랜/태스크/코멘트/런 데이터 모델
 lib/store.ts    data/ 디렉토리 JSON 파일 스토어
 lib/agent.ts    Agent SDK로 플랜 생성·코멘트 반영(revise)
 lib/runner.ts   claude -p 스폰, stream-json 파싱, 런 레지스트리
-app/api/...     REST 엔드포인트 (plans, comments, revise, execute, runs)
+lib/jobs.ts     원격 워커 잡 — 프로젝트별 큐, worktree → claude -p → 커밋 → 검증 → push/PR
+lib/notify.ts   Slack(Block Kit)·Discord 웹훅 알림 (공급자 중립 Notice)
+lib/screenshot.ts  워커 PC 화면 캡처 (macOS screencapture / Windows PowerShell)
+app/api/...     REST 엔드포인트 (plans, comments, revise, execute, runs, jobs, screenshots)
 components/PlanBoard.tsx  계획표 보드 UI (코멘트·반영·부분 착수·로그)
-mcp/server.mjs  MCP 서버 — 온디맨드로 보드 서버 스폰, plan_create/plan_status 등 툴 제공
+components/JobList.tsx · JobView.tsx  워커 잡 목록·상세(로그 스트림)
+mcp/server.mjs  MCP 서버(stdio) — 온디맨드로 보드 서버 스폰, plan_create/plan_status 등 툴 제공
+mcp/worker.mjs  원격 워커 MCP 서버(Streamable HTTP + Bearer) — job_submit/status/logs/cancel, worker_screenshot
+deploy/launchd/ macOS LaunchAgent 등록 스크립트·템플릿
 ```

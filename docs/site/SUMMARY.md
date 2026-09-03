@@ -17,6 +17,7 @@
 
 * [MCP on-demand](integration/mcp.md)
 * [Remote access](integration/remote.md)
+* [Remote worker](integration/worker.md)
 
 ## Reference
 
