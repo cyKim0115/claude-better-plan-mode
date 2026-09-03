@@ -13,6 +13,7 @@ description: >-
 - `grouped-git-commit` — 관심사별 묶음 커밋 · 「전체」커밋의 의미
 - `readme-tone` — README·`docs/site/**` 존댓말 톤
 - `dev-server-restart` — 타입 체크 · 빌드 · 개발/보드 서버 재시작
+- `slack-webhook-message` — Slack Incoming Webhook Block Kit 포맷 · `Notice` → `toSlack` · 글자 제한
 
 ## Routing
 
@@ -22,3 +23,4 @@ description: >-
 | 전체 커밋 / 전부 커밋 / 단계별 커밋 / 비슷한 것끼리 / 혼합 워킹트리 | `grouped-git-commit` |
 | README / 사용 안내 / GitBook 문서 / 존댓말 톤 | `readme-tone` |
 | 빌드 확인 / 서버 재시작 / 3000·3123 포트 정리 / 화면 확인 | `dev-server-restart` |
+| 슬랙 알림 / 웹훅 메시지 포맷 / Block Kit / 알림 추가 | `slack-webhook-message` |
