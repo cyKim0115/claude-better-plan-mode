@@ -19,7 +19,7 @@
 
 `pending → queued → running → done | failed | skipped`.
 
-- 상태 전이는 실행 경로(`lib/runner.ts`)가 소유한다. UI나 revise가 임의로 `done`을 쓰지 않는다.
+- 상태 전이는 실행 경로가 소유한다 — 마커 반영·종료 확정 모두 `lib/plan-run.ts`(`createPlanProgress`)를 거치고, 플랜 파일 쓰기는 그 모듈의 직렬 큐(`enqueuePlanUpdate`)로만 한다. UI나 revise가 임의로 `done`을 쓰지 않는다.
 - `dependsOn`은 힌트다(강제 게이팅 아님). 게이팅을 넣으려면 부분 착수 UX와 함께 설계한다.
 - 새 상태 값을 추가하면 `TaskStatus`, 보드 배지, 웹훅 요약(`lib/notify.ts`)까지 함께 갱신한다.
 

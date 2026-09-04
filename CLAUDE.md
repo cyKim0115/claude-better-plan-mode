@@ -9,10 +9,11 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 |---|---|
 | `lib/types.ts` | Plan / PlanTask / PlanComment / Run 데이터 모델 (단일 소스) |
 | `lib/store.ts` | `data/plans/*.json` 파일 스토어 |
-| `lib/agent.ts` | Agent SDK로 플랜 생성·revise (읽기 전용 툴만) |
-| `lib/runner.ts` | `claude -p` 스폰, stream-json 파싱, 인메모리 런 레지스트리 |
+| `lib/agent.ts` | Agent SDK로 플랜 생성·revise (읽기 전용 툴만, 모델·effort 선택) |
+| `lib/plan-run.ts` | 착수 지시문 조립 + 진행 마커 → 태스크 상태 반영. 플랜 쓰기 직렬 큐 (runner·jobs 공용) |
+| `lib/runner.ts` | 프로젝트 미지정 플랜의 착수 — `claude -p` 스폰, 인메모리 런 레지스트리 |
 | `lib/stream-json.ts` | stream-json → 로그 항목 공용 변환기 (runner는 마커 처리 때문에 자체 포맷터 유지) |
-| `lib/jobs.ts` | 원격 워커 잡 — `data/jobs/*.json` 저장, 프로젝트별 직렬 큐, worktree → claude -p → 커밋 → 검증 → push/PR |
+| `lib/jobs.ts` | 원격 워커 잡 + 플랜 착수 — `data/jobs/*.json` 저장, 프로젝트별 직렬 큐, worktree → claude -p → 커밋 → 검증 → push/PR |
 | `lib/notify.ts` | Slack(Block Kit)·Discord 웹훅 알림 — 공급자 중립 `Notice` → `toSlack`/`toDiscord` (미설정 시 no-op) |
 | `lib/screenshot.ts` | 워커 PC 화면 캡처 |
 | `lib/tunnel.ts` | ngrok 공개 URL |
@@ -25,11 +26,13 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 | `skills/` | 다른 기기에 설치하는 배포용 스킬 (`remote-worker`). 리포 작업 규칙은 `.claude/skills/` |
 | `config/projects.json` | 워커가 다룰 프로젝트 목록 (gitignore, 예시는 `projects.example.json`) |
 | `deploy/launchd/` | macOS LaunchAgent 등록 스크립트·템플릿 |
-| `deploy/autopush/` | 미푸시 커밋을 Mac 키체인으로 1분마다 push하는 LaunchAgent (샌드박스 세션이 커밋만 남길 때). 대상은 `config/autopush.txt`(gitignore) |
+| `deploy/autopush/` | 미푸시 커밋을 Mac 키체인으로 push하는 LaunchAgent — 대상 리포의 `.git/logs/HEAD`를 WatchPaths로 감시해 커밋 직후 실행, 5분 주기는 안전망. 대상은 `config/autopush.txt`(gitignore, 고치면 install.sh 재실행) |
 
 ## 상시 규칙
 
 **시크릿·로컬 데이터**: `.env.local`, `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, `WORKER_TOKEN`, ngrok 토큰, `ANTHROPIC_API_KEY` 값을 읽거나 출력하거나 커밋하지 않는다. `data/`는 gitignore된 실사용자 플랜·잡 데이터, `config/projects.json`은 로컬 경로가 든 설정 — 예시가 필요하면 새 파일을 만들지 말고 구조만 `lib/types.ts`·`projects.example.json`에서 인용한다.
+
+**플랜 착수**: 플랜에 `project`(projects.json 키)가 있으면 착수는 잡 파이프라인을 탄다(`submitJob({ planId, taskIds })`) — 실행 지시문은 worktree·브랜치가 정해진 뒤 `buildPlanJobPrompt`가 조립하고, 진행 마커는 `lib/plan-run.ts`가 플랜에 반영한다. `project`가 없는 레거시 플랜만 `lib/runner.ts`로 간다. 두 경로 모두 지시문·마커 로직을 각자 복제하지 말고 `lib/plan-run.ts`를 쓴다. PR/직푸시 선택은 계획표 액션바(착수 시점)에 있다 — 플랜 생성 시점으로 옮기지 않는다.
 
 **워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `exec`/`runClaude`의 워치독(상한 + 무출력 정지)을 거친다 — 워치독 없는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용). 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
 
