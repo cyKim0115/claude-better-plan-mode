@@ -42,13 +42,16 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-첫 화면에서 목표와 **대상 프로젝트 경로**(claude가 작업할 리포의 절대경로)를 입력하고 "플랜 생성"을 누르면 됩니다. 생성은 코드베이스 크기에 따라 수 분 걸릴 수 있습니다.
+첫 화면에서 목표와 **대상 프로젝트**를 고르고 "플랜 생성"을 누르면 됩니다. 생성은 코드베이스 크기에 따라 수 분 걸릴 수 있습니다.
+
+프로젝트 드롭다운은 `config/projects.json`(워커 잡과 같은 파일)에서 옵니다. 프로젝트를 고른 플랜은 착수할 때 **PR 생성 / 기본 브랜치 직푸시**를 선택할 수 있고, 등록하지 않은 리포는 "직접 경로 입력"으로 절대경로를 적으면 됩니다(이 경우 실행만 하고 커밋·push는 하지 않습니다). 계획을 세우는 모델·추론 레벨도 여기서 고를 수 있습니다.
 
 ## 사용법
 
 - **코멘트**: 각 태스크 카드 아래 입력창(태스크 대상) 또는 "플랜 전체 코멘트"(계획 전반)에 첨언을 답니다.
 - **코멘트 반영**: 하단 액션바의 반영 버튼을 누르면 미해결 코멘트 전부를 Claude가 읽고 계획을 수정합니다. 반영된 코멘트는 resolved 처리되고 revision 이력이 남습니다.
-- **부분 착수**: 태스크 체크박스를 골라 "선택 착수"를 누르면 해당 태스크들의 실행 지시문을 조립해 `claude -p`(headless)가 대상 프로젝트에서 수행합니다. 로그가 실시간으로 보드에 흐릅니다.
+- **부분 착수**: 태스크 체크박스를 골라 "선택 착수"를 누르면 해당 태스크들의 실행 지시문을 조립해 `claude -p`(headless)가 수행합니다. 로그가 실시간으로 보드에 흐릅니다.
+- **착수 옵션**: 액션바에서 **PR 생성 / 직푸시**, 모델, 추론 레벨(effort), 권한 확인 생략을 고른 뒤 착수합니다. 프로젝트가 지정된 플랜은 워커 잡 파이프라인을 타므로 전용 worktree에서 실행 → 커밋 → push/PR까지 끝나고, 메인 작업 트리와 현재 브랜치는 건드리지 않습니다. PR 링크는 실행 패널에 뜹니다.
 - **진행 현황**: 착수하면 첫 태스크만 running이 되고 나머지는 queued로 대기합니다. Claude가 태스크를 하나 끝낼 때마다 그 태스크만 done/failed로 바뀌며, 오른쪽 진행 현황 패널에서 진행률과 현재 작업을 볼 수 있습니다.
 - **권한**: 기본은 `--permission-mode acceptEdits`(파일 편집 자동 허용). 체크박스로 `--dangerously-skip-permissions` 전환 가능 — 신뢰하는 리포에서만 쓰세요.
 
@@ -65,7 +68,7 @@ claude mcp add planmode -- node C:\Users\cykim\repo\claude-better-plan-mode\mcp\
 
 | 툴 | 동작 |
 |---|---|
-| `plan_create` | (서버 자동 시작 후) 플랜 생성을 백그라운드로 시작하고 보드 URL 즉시 반환. `workdir` 생략 시 현재 세션의 프로젝트 디렉토리 대상 |
+| `plan_create` | (서버 자동 시작 후) 플랜 생성을 백그라운드로 시작하고 보드 URL 즉시 반환. `project`(projects.json 키)를 주면 착수 시 PR/직푸시 선택 가능, 없으면 `workdir`(생략 시 현재 세션 디렉토리) 대상. `model`·`effort`로 계획 에이전트 조절 |
 | `plan_status` | 생성 진행/태스크 상태/미반영 코멘트 요약 — 세션 안에서 코멘트를 읽고 이어서 작업 가능 |
 | `plan_list` | 저장된 플랜 목록 |
 | `board_open` | 보드 서버만 켜고 URL 반환 |
@@ -108,7 +111,7 @@ Claude Desktop처럼 헤더를 못 붙이는 호스트는 stdio 브리지 `mcp/w
 ## 저장 위치 / 제약
 
 - 플랜은 `data/plans/*.json`, 워커 잡은 `data/jobs/*.json`에 저장됩니다 (git-ignore됨). 백업/이동이 쉽습니다.
-- 실행(run) 로그는 서버 프로세스 메모리에만 있습니다. 서버 재시작 시 과거 실행 로그는 사라집니다(플랜/태스크 상태는 유지).
+- 프로젝트가 지정된 플랜의 착수는 잡으로 저장돼 재시작 후에도 남습니다. 경로만 지정된 플랜의 실행(run) 로그는 서버 프로세스 메모리에만 있어 재시작 시 사라집니다(플랜/태스크 상태는 유지).
 - 단일 서버 프로세스 전제입니다 (`next dev` 또는 `next start` 하나만 띄우세요).
 
 ## 구조
@@ -117,7 +120,8 @@ Claude Desktop처럼 헤더를 못 붙이는 호스트는 stdio 브리지 `mcp/w
 lib/types.ts    플랜/태스크/코멘트/런 데이터 모델
 lib/store.ts    data/ 디렉토리 JSON 파일 스토어
 lib/agent.ts    Agent SDK로 플랜 생성·코멘트 반영(revise)
-lib/runner.ts   claude -p 스폰, stream-json 파싱, 런 레지스트리
+lib/plan-run.ts 착수 지시문 조립 + 진행 마커 → 태스크 상태 반영 (runner·jobs 공용)
+lib/runner.ts   경로만 지정된 플랜의 착수 — claude -p 스폰, 런 레지스트리(인메모리)
 lib/jobs.ts     원격 워커 잡 — 프로젝트별 큐, worktree → claude -p → 커밋 → 검증 → push/PR
 lib/notify.ts   Slack(Block Kit)·Discord 웹훅 알림 (공급자 중립 Notice)
 lib/screenshot.ts  워커 PC 화면 캡처 (macOS screencapture / Windows PowerShell)
@@ -127,4 +131,16 @@ components/JobList.tsx · JobView.tsx  워커 잡 목록·상세(로그 스트�
 mcp/server.mjs  MCP 서버(stdio) — 온디맨드로 보드 서버 스폰, plan_create/plan_status 등 툴 제공
 mcp/worker.mjs  원격 워커 MCP 서버(Streamable HTTP + Bearer) — job_submit/status/logs/cancel, worker_screenshot
 deploy/launchd/ macOS LaunchAgent 등록 스크립트·템플릿
+deploy/autopush/ 미푸시 커밋 자동 push — 리포의 .git/logs/HEAD를 감시해 커밋 직후 밀어 올림
 ```
+
+## 커밋 자동 push (선택)
+
+샌드박스 세션처럼 자격증명이 없는 환경에서 커밋만 남는 경우, Mac 키체인을 쓰는 LaunchAgent가 대신 push합니다. 대상 리포의 `.git/logs/HEAD`를 감시하므로 **커밋한 직후** 올라가고, 이벤트를 놓쳤을 때를 대비해 5분 주기 안전망이 함께 돕니다.
+
+```bash
+cp config/autopush.example.txt config/autopush.txt   # 대상 리포 절대경로 목록
+bash deploy/autopush/install.sh                      # 등록 (목록을 고치면 다시 실행)
+```
+
+upstream을 추적하는 브랜치만, fast-forward일 때만 밉니다. force push는 하지 않으며, 리포별로 잠시 끄려면 `touch .git/autopush-off`.

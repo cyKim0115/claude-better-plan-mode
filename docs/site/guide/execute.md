@@ -12,9 +12,23 @@ icon: play
 실행할 태스크의 체크박스를 고릅니다. `pending`/`failed`만 선택 가능하고, 선행 태스크가 있으면 순서를 참고하세요.
 {% endstep %}
 {% step %}
+### 착수 옵션 선택
+
+액션바에서 이번 착수에 쓸 옵션을 고릅니다.
+
+| 옵션 | 값 | 설명 |
+|------|----|------|
+| 결과 처리 | `PR 생성` / `<기본 브랜치> 직푸시` | 프로젝트가 지정된 플랜에서만. 직푸시는 `projects.json`의 `allowDirect: false`로 잠글 수 있습니다 |
+| 모델 | 기본 / sonnet / opus / haiku / fable | `claude --model` |
+| 추론 레벨 | 기본 / low ~ max | `claude --effort` |
+| 권한 확인 생략 | 체크박스 | `--dangerously-skip-permissions` |
+{% endstep %}
+{% step %}
 ### 착수
 
-**선택한 N개 태스크 착수 ▶**를 누르면 선택 태스크들의 실행 지시문을 조립해 대상 프로젝트(workdir)에서 `claude -p`(headless)가 수행합니다.
+**선택한 N개 태스크 착수 ▶**를 누르면 선택 태스크들의 실행 지시문을 조립해 `claude -p`(headless)가 수행합니다.
+
+프로젝트가 지정된 플랜은 워커 잡 파이프라인을 탑니다 — 전용 worktree를 만들어 거기서 실행하고, 커밋한 뒤 PR을 만들거나 기본 브랜치에 직푸시합니다. 메인 작업 트리와 현재 브랜치는 건드리지 않습니다. 경로만 지정된 플랜은 그 경로에서 실행만 합니다.
 
 <figure><img src="../images/run-log.png" alt="실행 로그"><figcaption>실행 패널 — 실시간 로그 스트리밍</figcaption></figure>
 {% endstep %}
@@ -28,7 +42,9 @@ icon: play
 {% step %}
 ### 결과 반영
 
-run이 끝나면 남은 태스크 상태가 `done`/`failed`로 확정됩니다. 실패한 태스크는 다시 체크해 재착수하거나, 코멘트로 계획을 고친 뒤 재시도합니다.
+세션이 끝나면 남은 태스크 상태가 `done`/`failed`로 확정됩니다. 실패한 태스크는 다시 체크해 재착수하거나, 코멘트로 계획을 고친 뒤 재시도합니다.
+
+PR 모드였다면 실행 패널과 진행 현황 패널에 **PR 링크**가 뜹니다. 커밋까지 갔지만 push·PR에서 실패한 경우 `/jobs/<id>` 상세에서 **이어서 마무리**로 그 단계부터 다시 돌릴 수 있습니다.
 {% endstep %}
 {% endstepper %}
 
@@ -57,7 +73,7 @@ Claude는 태스크를 마칠 때마다 진행 마커를 출력하고, 보드는
 {% endhint %}
 
 {% hint style="info" %}
-run 로그는 서버 프로세스 메모리에만 있습니다. 서버를 재시작하면 과거 로그는 `expired`로 표시됩니다 (태스크 상태는 유지).
+경로만 지정된 플랜(레거시 경로)의 run 로그는 서버 프로세스 메모리에만 있습니다. 서버를 재시작하면 과거 로그는 `expired`로 표시됩니다 (태스크 상태는 유지). 프로젝트가 지정된 플랜의 착수는 잡으로 `data/jobs/*.json`에 저장되므로 재시작 후에도 남습니다.
 {% endhint %}
 
 다음: [MCP on-demand](../integration/mcp.md) · [REST API](../reference/api.md)

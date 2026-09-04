@@ -11,10 +11,10 @@ Base: `http://localhost:3000` (또는 MCP 스폰 시 `:3123`)
 
 | Method · Path | Body | 반환 |
 |---------------|------|------|
-| `GET /api/plans` | — | 플랜 요약 목록 (`id`, `title`, `goal`, `workdir`, `revision`, `taskCount`, `doneCount`) |
-| `POST /api/plans` | `{ goal, workdir, async? }` | `async: true`면 스텁(`generating: true`) 즉시 반환 후 백그라운드 생성. 아니면 완성된 플랜 |
-| `GET /api/plans/:id` | — | `{ plan, runs }` — run은 `logLength`만 포함 |
-| `PATCH /api/plans/:id` | `{ taskStatus?: { taskId, status }, workdir? }` | 갱신된 플랜 |
+| `GET /api/plans` | — | 플랜 요약 목록 (`id`, `title`, `goal`, `workdir`, `project`, `revision`, `taskCount`, `doneCount`) |
+| `POST /api/plans` | `{ goal, project?, workdir?, model?, effort?, async? }` | `project`는 `config/projects.json` 키 — 주면 `workdir`는 그 경로로 채워지고 착수 시 PR/직푸시를 쓸 수 있다. `model`·`effort`는 계획 에이전트용. `async: true`면 스텁(`generating: true`) 즉시 반환 후 백그라운드 생성 |
+| `GET /api/plans/:id` | — | `{ plan, runs, jobs }` — run은 `logLength`만, job은 상태·모드·PR 링크 요약 |
+| `PATCH /api/plans/:id` | `{ taskStatus?: { taskId, status }, workdir?, project? }` | 갱신된 플랜. `project`에 빈 문자열을 주면 연결 해제 |
 | `DELETE /api/plans/:id` | — | `{ ok: true }` |
 
 ## Comments & revise
@@ -29,7 +29,7 @@ Base: `http://localhost:3000` (또는 MCP 스폰 시 `:3123`)
 
 | Method · Path | Body | 반환 |
 |---------------|------|------|
-| `POST /api/plans/:id/execute` | `{ taskIds: string[], skipPermissions? }` | `{ runId }` |
+| `POST /api/plans/:id/execute` | `{ taskIds: string[], mode?, model?, effort?, maxTurns?, skipPermissions? }` | 프로젝트가 지정된 플랜이면 `{ kind: "job", jobId, mode }`, 아니면 `{ kind: "run", runId }`. `mode`(`pr`\|`direct`)는 프로젝트가 지정된 플랜에서만 |
 | `GET /api/runs/:id?since=<n>` | — | `{ status, log, logLength }` — `since` 이후 로그만 (폴링용) |
 
 {% hint style="info" %}
