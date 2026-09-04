@@ -1,27 +1,50 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Plan, PlanComment, PlanTask, RunLogLine, TaskStatus } from "@/lib/types";
+import type { JobEffort, JobMode, Plan, PlanComment, PlanTask, RunLogLine, TaskStatus } from "@/lib/types";
+import { MODEL_PRESETS } from "./options";
 
+/** 착수 한 건 — 레거시 런(runner)과 잡(worker 파이프라인)을 같은 모양으로 본다 */
 interface RunView {
   id: string;
+  kind: "run" | "job";
   status: string;
   taskIds: string[];
-  startedAt: string;
+  startedAt?: string;
   endedAt?: string;
-  logLength: number;
+  /** 잡일 때만 */
+  createdAt?: string;
+  stage?: string;
+  mode?: JobMode;
+  branch?: string;
+  prUrl?: string;
+  error?: string;
 }
 
-const ACTIVE_RUN_STATUSES = ["starting", "running"];
+interface ProjectSummary {
+  key: string;
+  baseBranch: string;
+  allowDirect: boolean;
+  unityVerify: boolean;
+  defaultModel?: string;
+  defaultEffort?: JobEffort;
+}
+
+const ACTIVE_RUN_STATUSES = ["starting", "running", "queued"];
 
 export default function PlanBoard({ planId }: { planId: string }) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [runs, setRuns] = useState<RunView[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [efforts, setEfforts] = useState<JobEffort[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [revising, setRevising] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [skipPerms, setSkipPerms] = useState(false);
+  const [mode, setMode] = useState<JobMode>("pr");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [planComment, setPlanComment] = useState("");
   const defaultsAppliedRef = useRef(false);
 
@@ -30,7 +53,10 @@ export default function PlanBoard({ planId }: { planId: string }) {
     if (!res.ok) return;
     const data = await res.json();
     setPlan(data.plan);
-    setRuns(data.runs ?? []);
+    const legacyRuns: RunView[] = (data.runs ?? []).map((r: Omit<RunView, "kind">) => ({ ...r, kind: "run" as const }));
+    const jobRuns: RunView[] = (data.jobs ?? []).map((j: Omit<RunView, "kind">) => ({ ...j, kind: "job" as const }));
+    const at = (r: RunView) => r.startedAt ?? r.createdAt ?? "";
+    setRuns([...jobRuns, ...legacyRuns].sort((a, b) => (at(a) < at(b) ? 1 : -1)));
     // 착수 가능한(pending) 태스크는 기본 체크 상태로 시작
     if ((applyDefaults || !defaultsAppliedRef.current) && data.plan && !data.plan.generating) {
       defaultsAppliedRef.current = true;
@@ -39,6 +65,17 @@ export default function PlanBoard({ planId }: { planId: string }) {
   }, [planId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 착수 옵션에 쓸 프로젝트 설정 (baseBranch·직푸시 허용 여부·기본 모델)
+  useEffect(() => {
+    fetch("/api/jobs")
+      .then((r) => r.json())
+      .then((d: { projects: ProjectSummary[]; efforts: JobEffort[] }) => {
+        setProjects(d.projects ?? []);
+        setEfforts(d.efforts ?? []);
+      })
+      .catch(() => {});
+  }, []);
 
   // 서버에서 진행 중인 run (다른 탭에서 착수했거나 새로고침한 경우도 잡힌다)
   const liveRun = runs.find((r) => ACTIVE_RUN_STATUSES.includes(r.status)) ?? null;
@@ -92,11 +129,18 @@ export default function PlanBoard({ planId }: { planId: string }) {
       const res = await fetch(`/api/plans/${planId}/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskIds: [...selected], skipPermissions: skipPerms }),
+        body: JSON.stringify({
+          taskIds: [...selected],
+          skipPermissions: skipPerms,
+          // PR/직푸시는 프로젝트가 지정된 플랜에서만 (잡 파이프라인)
+          mode: plan?.project ? mode : undefined,
+          model: model || undefined,
+          effort: effort || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "착수 실패");
-      setActiveRunId(data.runId);
+      setActiveRunId(data.kind === "job" ? data.jobId : data.runId);
       setSelected(new Set());
       await load();
     } catch (e) {
@@ -116,6 +160,7 @@ export default function PlanBoard({ planId }: { planId: string }) {
   if (!plan) return <p className="muted">불러오는 중…</p>;
 
   const taskById = new Map(plan.tasks.map((t) => [t.id, t]));
+  const project = projects.find((p) => p.key === plan.project);
 
   // 사이드 진행 패널이 볼 run — 진행 중인 것 우선, 없으면 가장 최근 run
   const focusRun = runs.find((r) => r.id === activeRunId) ?? liveRun ?? runs[0] ?? null;
@@ -128,7 +173,10 @@ export default function PlanBoard({ planId }: { planId: string }) {
           <h1>{plan.title}</h1>
           <div className="row small muted">
             <span className="badge rev">rev {plan.revision}</span>
+            {plan.project && <span className="badge">{plan.project}</span>}
             <span>{plan.workdir || "(작업 경로 미지정)"}</span>
+            {plan.planModel && <span>· 계획 모델 {plan.planModel}</span>}
+            {plan.planEffort && <span>· 계획 effort {plan.planEffort}</span>}
           </div>
         </div>
       </div>
@@ -205,19 +253,51 @@ export default function PlanBoard({ planId }: { planId: string }) {
         <button className="primary" onClick={execute} disabled={selected.size === 0 || revising || plan.generating}>
           선택한 {selected.size}개 태스크 착수 ▶
         </button>
+
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value as JobMode)}
+          disabled={!plan.project}
+          title={plan.project ? "결과 처리 방식" : "프로젝트가 지정된 플랜에서만 선택할 수 있습니다"}
+        >
+          <option value="pr">PR 생성</option>
+          <option value="direct" disabled={project ? !project.allowDirect : false}>
+            {project?.baseBranch ?? "기본 브랜치"} 직푸시{project && !project.allowDirect ? " (잠김)" : ""}
+          </option>
+        </select>
+        <select value={model} onChange={(e) => setModel(e.target.value)} title="실행 모델">
+          {MODEL_PRESETS.map((m) => (
+            <option key={m} value={m}>
+              {m ? `모델: ${m}` : `모델: 기본${project?.defaultModel ? ` (${project.defaultModel})` : ""}`}
+            </option>
+          ))}
+        </select>
+        <select value={effort} onChange={(e) => setEffort(e.target.value)} title="추론 레벨">
+          <option value="">effort: 기본{project?.defaultEffort ? ` (${project.defaultEffort})` : ""}</option>
+          {efforts.map((ef) => (
+            <option key={ef} value={ef}>effort: {ef}</option>
+          ))}
+        </select>
         <label className="row small muted" style={{ gap: 4 }}>
           <input type="checkbox" checked={skipPerms} onChange={(e) => setSkipPerms(e.target.checked)} />
           권한 확인 생략 (--dangerously-skip-permissions)
         </label>
       </div>
+      <p className="small muted" style={{ marginTop: 6 }}>
+        {plan.project
+          ? `착수하면 ${plan.project} worktree에서 실행한 뒤 ${mode === "pr" ? "브랜치를 push하고 PR을 만듭니다" : `${project?.baseBranch ?? "기본 브랜치"}에 바로 반영합니다`}.`
+          : "이 플랜은 경로만 지정돼 있어 workdir에서 그대로 실행합니다 (커밋·push 없음). PR/직푸시를 쓰려면 config/projects.json의 프로젝트를 지정하세요."}
+      </p>
 
       <h2>실행</h2>
-      {runs.length === 0 && !activeRunId && <p className="muted">아직 실행 기록이 없습니다.</p>}
-      {(activeRunId ? [activeRunId, ...runs.map((r) => r.id).filter((id) => id !== activeRunId)] : runs.map((r) => r.id))
-        .slice(0, 5)
-        .map((rid) => (
-          <RunPanel key={rid} runId={rid} onFinished={() => { setActiveRunId(null); load(true); }} />
-        ))}
+      {runs.length === 0 && <p className="muted">아직 실행 기록이 없습니다.</p>}
+      {runs.slice(0, 5).map((r) =>
+        r.kind === "job" ? (
+          <JobPanel key={r.id} run={r} onFinished={() => { setActiveRunId(null); load(true); }} />
+        ) : (
+          <RunPanel key={r.id} runId={r.id} onFinished={() => { setActiveRunId(null); load(true); }} />
+        )
+      )}
       </div>
 
       <aside className="board-rail">
@@ -264,7 +344,8 @@ function RunProgress({ run, tasks }: { run: RunView; tasks: PlanTask[] }) {
   const percent = total === 0 ? 0 : Math.round((settled / total) * 100);
 
   const endedMs = run.endedAt ? +new Date(run.endedAt) : now;
-  const elapsedSec = Math.max(0, Math.round((endedMs - +new Date(run.startedAt)) / 1000));
+  const startedMs = +new Date(run.startedAt ?? run.createdAt ?? new Date().toISOString());
+  const elapsedSec = Math.max(0, Math.round((endedMs - startedMs) / 1000));
   const elapsed = elapsedSec < 60 ? `${elapsedSec}초` : `${Math.floor(elapsedSec / 60)}분 ${elapsedSec % 60}초`;
 
   const badgeClass = run.status === "succeeded" ? "done" : run.status === "failed" ? "failed" : "running";
@@ -305,10 +386,17 @@ function RunProgress({ run, tasks }: { run: RunView; tasks: PlanTask[] }) {
       </div>
 
       <div className="row small muted" style={{ gap: 10 }}>
-        <span>Run {run.id.slice(0, 8)}</span>
+        <span>{run.kind === "job" ? "Job" : "Run"} {run.id.slice(0, 8)}</span>
+        {run.kind === "job" && run.stage && <span>{run.stage}</span>}
+        {run.kind === "job" && run.mode && <span>{run.mode === "pr" ? "PR" : "직푸시"}</span>}
         {counts.failed > 0 && <span style={{ color: "var(--red)" }}>실패 {counts.failed}</span>}
         {counts.queued > 0 && <span>대기 {counts.queued}</span>}
       </div>
+      {run.prUrl && (
+        <div className="small" style={{ marginTop: 6 }}>
+          <a href={run.prUrl} target="_blank" rel="noreferrer">PR 열기</a>
+        </div>
+      )}
     </div>
   );
 }
@@ -391,6 +479,84 @@ function CommentView({ comment, onDelete }: { comment: PlanComment; onDelete: ()
         {!comment.resolved && <button className="tiny danger" style={{ marginLeft: 8 }} onClick={onDelete}>삭제</button>}
       </div>
       {comment.text}
+    </div>
+  );
+}
+
+/** 잡 파이프라인으로 착수한 실행 — 로그는 /api/jobs/:id에서 증분 폴링 */
+function JobPanel({ run, onFinished }: { run: RunView; onFinished: () => void }) {
+  const [status, setStatus] = useState(run.status);
+  const [stage, setStage] = useState(run.stage ?? "");
+  const [log, setLog] = useState<RunLogLine[]>([]);
+  const cursorRef = useRef(0);
+  const doneRef = useRef(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const jobId = run.id;
+  // 이미 끝난 잡을 다시 그린 경우엔 보드를 갱신할 필요가 없다
+  const wasActiveRef = useRef(ACTIVE_RUN_STATUSES.includes(run.status));
+
+  useEffect(() => {
+    let stopped = false;
+    async function poll() {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/api/jobs/${jobId}?since=${cursorRef.current}`);
+        if (stopped) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (stopped) return;
+          setStatus(data.status);
+          setStage(data.stage);
+          if (data.log.length > 0) {
+            setLog((prev) => [...prev, ...data.log]);
+            cursorRef.current = data.logLength;
+          }
+          if (["succeeded", "failed", "cancelled"].includes(data.status) && !doneRef.current) {
+            doneRef.current = true;
+            if (wasActiveRef.current) onFinished();
+            return;
+          }
+        }
+      } catch { /* 서버 재시작 등 — 다음 폴링에서 재시도 */ }
+      if (!stopped && !doneRef.current) setTimeout(poll, 1500);
+    }
+    poll();
+    return () => { stopped = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
+  useEffect(() => {
+    boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
+  }, [log]);
+
+  const badgeClass = status === "succeeded" ? "done" : status === "failed" ? "failed" : status === "cancelled" ? "skipped" : "running";
+  const live = status === "running" || status === "queued";
+
+  return (
+    <div className="card" style={{ marginBottom: 10 }}>
+      <div className="row spread" style={{ marginBottom: 8 }}>
+        <div className="row">
+          <strong className="small">Job {jobId.slice(0, 8)}</strong>
+          <span className="small muted">
+            {run.mode === "direct" ? "직푸시" : "PR"}{run.branch ? ` · ${run.branch}` : ""}
+          </span>
+          <a className="small" href={`/jobs/${jobId}`}>상세</a>
+          {run.prUrl && <a className="small" href={run.prUrl} target="_blank" rel="noreferrer">PR</a>}
+        </div>
+        <span className={`badge ${badgeClass}`}>
+          {live && <span className="spinner" style={{ marginRight: 6 }} />}
+          {status}{stage ? ` · ${stage}` : ""}
+        </span>
+      </div>
+      {run.error && <div className="small" style={{ color: "var(--red)", marginBottom: 6 }}>{run.error}</div>}
+      <div className="log" ref={boxRef}>
+        {log.length === 0 && <span className="muted">로그 대기 중…</span>}
+        {log.map((l, i) => (
+          <div key={i} className={`log-line ${l.kind}`}>
+            <span className="k">[{l.kind}]</span>{l.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

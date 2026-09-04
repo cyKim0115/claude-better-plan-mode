@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { JobEffort, JobMode, JobStatus, JobVerifyResult } from "@/lib/types";
+import { MODEL_PRESETS } from "./options";
 
 interface JobSummary {
   id: string;
@@ -46,7 +47,6 @@ export function ago(iso?: string): string {
   return s < 60 ? `${s}초 전` : s < 3600 ? `${Math.floor(s / 60)}분 전` : `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분 전`;
 }
 
-const MODEL_PRESETS = ["", "sonnet", "opus", "haiku", "fable"];
 
 export default function JobList() {
   const router = useRouter();
