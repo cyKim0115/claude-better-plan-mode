@@ -25,6 +25,7 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 | `skills/` | 다른 기기에 설치하는 배포용 스킬 (`remote-worker`). 리포 작업 규칙은 `.claude/skills/` |
 | `config/projects.json` | 워커가 다룰 프로젝트 목록 (gitignore, 예시는 `projects.example.json`) |
 | `deploy/launchd/` | macOS LaunchAgent 등록 스크립트·템플릿 |
+| `deploy/autopush/` | 미푸시 커밋을 Mac 키체인으로 1분마다 push하는 LaunchAgent (샌드박스 세션이 커밋만 남길 때). 대상은 `config/autopush.txt`(gitignore) |
 
 ## 상시 규칙
 

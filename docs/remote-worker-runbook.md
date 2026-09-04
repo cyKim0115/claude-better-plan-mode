@@ -77,6 +77,17 @@ bash deploy/launchd/install.sh
 
 재부팅·크래시 후 자동 복구됩니다. 로그: `deploy/launchd/logs/worker.err.log`
 
+### 1-5b. 자동 푸시 (Cowork·샌드박스에서 만든 커밋 올리기)
+
+Claude Desktop(Cowork) 세션은 Mac과 별개의 샌드박스라 GitHub 자격증명이 없어 커밋만 남기고 push는 못 합니다. 토큰을 어디 두는 대신, Mac에서 1분마다 미푸시 커밋을 감지해 키체인으로 push하는 LaunchAgent를 씁니다.
+
+```bash
+cp config/autopush.example.txt config/autopush.txt   # 대상 리포 절대경로, 한 줄에 하나
+bash deploy/autopush/install.sh                       # 등록. 로그: deploy/launchd/logs/autopush.log
+```
+
+규칙: upstream을 추적 중인 현재 브랜치만, fast-forward일 때만 push합니다. 원격이 앞서 있으면 보류 로그만 남기고, force push는 하지 않습니다. 리포별로 잠시 끄려면 `touch <리포>/.git/autopush-off`.
+
 ### 1-6. Unity 안에서 보내는 스크린샷·녹화 (MyUtil WebhookFeedback)
 
 워커 완료 알림과는 별개 경로입니다. TeenipingTycoon 프로젝트 루트에:

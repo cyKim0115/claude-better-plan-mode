@@ -5,8 +5,9 @@ data/
 *.log
 .env*
 !.env.example
-# 워커 프로젝트 설정 — 로컬 경로가 들어가므로 예시만 커밋
+# 워커 프로젝트 설정 · autopush 대상 — 로컬 경로가 들어가므로 예시만 커밋
 config/projects.json
+config/autopush.txt
 # launchd 로그
 deploy/launchd/logs/
 next-env.d.ts
