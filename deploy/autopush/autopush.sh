@@ -2,6 +2,9 @@
 # 지정한 리포들의 "커밋됐지만 아직 push되지 않은" 현재 브랜치를 Mac 자격증명(키체인)으로 push한다.
 # 샌드박스·다른 환경에서 만든 커밋을 사람이 push 버튼을 누르지 않아도 원격에 올리는 용도.
 #
+# 실행 시점: LaunchAgent가 각 리포의 .git/logs/HEAD를 감시해 커밋 직후 깨우고,
+# 놓친 경우를 위해 5분 주기로도 한 번 돈다 (deploy/autopush/install.sh).
+#
 # 규칙:
 # - 현재 브랜치가 이미 upstream을 추적하고 있을 때만 push한다 (새 브랜치를 임의로 원격에 만들지 않는다).
 # - rebase/merge 진행 중, index.lock 존재, detached HEAD면 건너뛴다.
@@ -18,6 +21,24 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
 [ -f "$LIST" ] || { log "목록 없음: $LIST"; exit 0; }
+
+# 커밋 감지와 주기 실행이 겹쳐도 push가 두 번 돌지 않게 한다.
+# 이미 도는 중이면 그 회차가 이번 커밋까지 가져가므로 조용히 빠진다.
+LOCK="${TMPDIR:-/tmp}/autopush.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # 30분 넘게 남아 있는 락은 죽은 프로세스의 잔재로 보고 회수한다
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+    log "오래된 락 회수: $LOCK"
+    rmdir "$LOCK" 2>/dev/null || true
+    mkdir "$LOCK" 2>/dev/null || exit 0
+  else
+    exit 0
+  fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+# 커밋 직후 깨어난 경우 index/ref 쓰기가 끝나길 잠깐 기다린다
+sleep 1
 
 while IFS= read -r repo; do
   repo="${repo%%#*}"; repo="$(echo "$repo" | xargs)"

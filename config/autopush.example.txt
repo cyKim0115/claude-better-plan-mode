@@ -1,5 +1,6 @@
 # autopush 대상 리포 — 한 줄에 절대경로 하나. config/autopush.txt 로 복사해서 쓴다.
-# 현재 브랜치가 upstream을 추적 중이고 미푸시 커밋이 있으면 1분 안에 push된다.
+# 현재 브랜치가 upstream을 추적 중이면 커밋 직후(감시) push되고, 놓친 건 5분 주기 안전망이 밀어 준다.
+# 이 파일을 고쳤으면 `bash deploy/autopush/install.sh`를 다시 실행해야 감시 목록이 반영된다.
 # 리포별로 잠시 끄려면 그 리포에 `touch .git/autopush-off`
 /Users/cykim/repo/claude-better-plan-mode
 /Users/cykim/repo/TeenipingTycoon

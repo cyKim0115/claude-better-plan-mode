@@ -18,8 +18,19 @@
     <string>__HOME__</string>
   </dict>
 
+  <!--
+    커밋이 나면 바로 push한다. 커밋은 .git/logs/HEAD(reflog)에 한 줄을 남기므로
+    대상 리포의 그 파일을 감시하면 launchd가 즉시 이 에이전트를 깨운다.
+    WatchPaths 목록은 install.sh가 config/autopush.txt에서 생성한다.
+  -->
+  <key>WatchPaths</key>
+  <array>
+__WATCHPATHS__
+  </array>
+
+  <!-- 감시가 놓친 경우(파일 이벤트 유실, 리포 추가 직후 등)를 위한 안전망 -->
   <key>StartInterval</key>
-  <integer>60</integer>
+  <integer>300</integer>
   <key>RunAtLoad</key>
   <true/>
 
