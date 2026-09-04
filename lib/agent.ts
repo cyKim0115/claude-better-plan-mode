@@ -1,9 +1,15 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Plan, PlanComment, PlanPhase, PlanTask } from "./types";
+import type { JobEffort, Plan, PlanComment, PlanPhase, PlanTask } from "./types";
 import { newId } from "./store";
 
+/** 계획 에이전트 옵션 — 착수(claude CLI) 옵션과 별개로 플랜 생성·수정에만 쓰인다 */
+export interface PlanAgentOptions {
+  model?: string;
+  effort?: JobEffort;
+}
+
 /** Agent SDK 응답에서 최종 텍스트를 뽑는다 */
-async function runAgent(prompt: string, workdir?: string): Promise<string> {
+async function runAgent(prompt: string, workdir?: string, agent?: PlanAgentOptions): Promise<string> {
   const q = query({
     prompt,
     options: {
@@ -13,6 +19,8 @@ async function runAgent(prompt: string, workdir?: string): Promise<string> {
       disallowedTools: ["Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "WebSearch"],
       permissionMode: "default",
       maxTurns: 30,
+      ...(agent?.model ? { model: agent.model } : {}),
+      ...(agent?.effort ? { effort: agent.effort } : {}),
     },
   });
 
@@ -132,7 +140,12 @@ function normalizePlanShape(raw: RawPlan, existing?: Plan): { title: string; ove
   };
 }
 
-export async function generatePlan(goal: string, workdir: string): Promise<Plan> {
+export interface GeneratePlanOptions extends PlanAgentOptions {
+  /** config/projects.json 키 — 플랜에 기록해 착수 시 그 프로젝트 설정을 쓴다 */
+  project?: string;
+}
+
+export async function generatePlan(goal: string, workdir: string, opts: GeneratePlanOptions = {}): Promise<Plan> {
   const prompt = `너는 시니어 엔지니어이자 플래너다. 아래 목표를 달성하기 위한 실행 계획을 세워라.
 ${workdir ? "현재 작업 디렉토리의 코드베이스를 필요한 만큼 탐색(Read/Glob/Grep)해서 현실적인 계획을 세워라." : ""}
 
@@ -141,7 +154,7 @@ ${goal}
 
 ${PLAN_SCHEMA_INSTRUCTIONS}`;
 
-  const text = await runAgent(prompt, workdir);
+  const text = await runAgent(prompt, workdir, opts);
   const raw = extractJson(text) as RawPlan;
   const shaped = normalizePlanShape(raw);
   const now = new Date().toISOString();
@@ -150,6 +163,9 @@ ${PLAN_SCHEMA_INSTRUCTIONS}`;
     title: shaped.title,
     goal,
     workdir,
+    project: opts.project,
+    planModel: opts.model,
+    planEffort: opts.effort,
     createdAt: now,
     updatedAt: now,
     revision: 1,
@@ -200,7 +216,7 @@ ${commentLines}
 ${PLAN_SCHEMA_INSTRUCTIONS}
 추가 규칙: 출력 JSON 최상위에 "revisionSummary": "이번 수정에서 무엇을 바꿨는지 한두 문장" 필드를 포함하라.`;
 
-  const text = await runAgent(prompt, plan.workdir);
+  const text = await runAgent(prompt, plan.workdir, { model: plan.planModel, effort: plan.planEffort });
   const raw = extractJson(text) as RawPlan & { revisionSummary?: string };
 
   // 기존 id를 유지하도록: raw task id가 기존 plan의 id와 일치하면 그대로 사용

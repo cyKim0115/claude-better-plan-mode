@@ -45,16 +45,6 @@ export interface Plan {
   goal: string;
   /** 실행 대상 프로젝트의 로컬 경로 (claude CLI의 cwd) */
   workdir: string;
-  /**
-   * config/projects.json의 키. 지정하면 착수가 잡 파이프라인을 타고
-   * PR/직푸시·Unity 검증·worktree 격리를 그 프로젝트 설정대로 쓴다.
-   * 없으면 workdir에서 직접 실행하는 레거시 경로.
-   */
-  project?: string;
-  /** 계획 생성·수정 에이전트에 쓸 모델 (생략 시 기본) */
-  planModel?: string;
-  /** 계획 생성·수정 에이전트의 추론 레벨 (생략 시 기본) */
-  planEffort?: JobEffort;
   createdAt: string;
   updatedAt: string;
   revision: number;
@@ -114,12 +104,8 @@ export interface Job {
   project: string;
   /** 알림·목록용 짧은 제목 */
   title: string;
-  /** claude -p에 전달할 지시문. 플랜 착수 잡이면 선택한 태스크로 조립된다 */
+  /** claude -p에 전달할 지시문 */
   prompt: string;
-  /** 플랜 착수로 만들어진 잡이면 그 플랜 id — 진행 마커가 이 플랜의 태스크 상태를 갱신한다 */
-  planId?: string;
-  /** 플랜 착수 잡이 이번에 수행할 태스크 id 목록 */
-  taskIds?: string[];
   mode: JobMode;
   status: JobStatus;
   stage: JobStage;
