@@ -1,6 +1,6 @@
 // claude -p --output-format stream-json 한 줄 → 사람이 읽는 로그 항목.
-// runner.ts는 태스크 마커 처리가 얽혀 있어 자체 포맷터를 유지하고,
-// 마커가 없는 원격 잡(lib/jobs.ts)은 이 공용 변환기를 쓴다.
+// runner.ts와 jobs.ts가 모두 이 변환기를 쓴다. 플랜 착수의 진행 마커는
+// assistant/result 텍스트를 lib/plan-run.ts에 넘겨 처리하고, 로그에는 마커를 걷어낸 텍스트만 남긴다.
 
 import type { RunLogLine } from "./types";
 

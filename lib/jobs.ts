@@ -13,9 +13,10 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { JOB_EFFORTS, type Job, type JobEffort, type JobMode, type JobStage, type ProjectConfig, type RunLogLine } from "./types";
-import { newId } from "./store";
+import { getPlan, newId } from "./store";
 import { notifyJobFinished } from "./notify";
 import { createLineParser } from "./stream-json";
+import { beginPlanTasks, buildPlanPrompt, createPlanProgress, stripMarkers, type PlanProgress } from "./plan-run";
 
 // ---------------------------------------------------------------------------
 // 경로·설정
@@ -192,6 +193,10 @@ export interface SubmitJobOptions {
   model?: string;
   effort?: JobEffort;
   maxTurns?: number;
+  /** 플랜 착수 잡이면 플랜 id — prompt는 아래 taskIds로 조립되므로 비워도 된다 */
+  planId?: string;
+  /** 플랜 착수 잡이 수행할 태스크 id 목록 */
+  taskIds?: string[];
   /** 완료 웹훅 링크 생성에 쓸 보드 포트 */
   port?: number;
 }
@@ -201,7 +206,25 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   const projects = await loadProjects();
   const cfg = projects[opts.project];
   if (!cfg) throw new Error(`알 수 없는 프로젝트: ${opts.project} (등록: ${Object.keys(projects).join(", ") || "없음"})`);
-  const prompt = opts.prompt.trim();
+
+  // 플랜 착수 잡: 실행 지시문은 worktree·브랜치가 정해진 뒤 runJob이 조립한다.
+  // 여기서는 존재·범위만 검증하고, prompt에는 사람이 읽을 요약(알림·PR 본문용)을 넣는다.
+  let planTaskIds: string[] | undefined;
+  let planTitle: string | undefined;
+  let planSummary: string | undefined;
+  if (opts.planId !== undefined) {
+    const plan = await getPlan(opts.planId);
+    if (!plan) throw new Error(`플랜을 찾을 수 없습니다: ${opts.planId}`);
+    planTaskIds = (opts.taskIds ?? []).filter((id) => plan.tasks.some((t) => t.id === id));
+    if (planTaskIds.length === 0) throw new Error("착수할 태스크가 없습니다");
+    planTitle = `${plan.title} — 태스크 ${planTaskIds.length}개`;
+    planSummary = [
+      `플랜 "${plan.title}" (rev ${plan.revision}) 착수 — 태스크 ${planTaskIds.length}개`,
+      ...plan.tasks.filter((t) => planTaskIds!.includes(t.id)).map((t) => `- ${t.title}`),
+    ].join("\n");
+  }
+
+  const prompt = planSummary ?? opts.prompt.trim();
   if (!prompt) throw new Error("prompt가 비어 있습니다");
   const mode: JobMode = opts.mode === "direct" ? "direct" : "pr";
   if (mode === "direct" && cfg.allowDirect === false) {
@@ -216,8 +239,10 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   const job: Job = {
     id: newId(),
     project: opts.project,
-    title: (opts.title?.trim() || prompt.split("\n")[0]).slice(0, 80),
+    title: (opts.title?.trim() || planTitle || prompt.split("\n")[0]).slice(0, 80),
     prompt,
+    planId: opts.planId,
+    taskIds: planTaskIds,
     mode,
     status: "queued",
     stage: "queued",
@@ -233,7 +258,7 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   pushLog(
     job,
     "info",
-    `잡 제출 (project: ${job.project}, mode: ${job.mode}, base: ${job.baseBranch}, model: ${job.model ?? "기본"}, effort: ${job.effort ?? "기본"})`
+    `잡 제출 (project: ${job.project}, mode: ${job.mode}, base: ${job.baseBranch}, model: ${job.model ?? "기본"}, effort: ${job.effort ?? "기본"}${job.planId ? `, plan: ${job.planId.slice(0, 8)}` : ""})`
   );
   await writeJob(job);
   enqueue(job, cfg, opts.port ?? 3000, { resume: false });
@@ -516,7 +541,21 @@ ${job.prompt}
 - 마지막 응답에 수행한 작업·검증 결과·남은 문제를 짧게 요약한다.`;
 }
 
-async function runClaude(job: Job, worktree: string): Promise<boolean> {
+/** 플랜 착수 잡의 실행 지시문 — worktree·브랜치가 정해진 뒤에 조립한다 */
+async function buildPlanJobPrompt(job: Job, worktree: string): Promise<string> {
+  const plan = await getPlan(job.planId!);
+  if (!plan) throw new Error(`플랜을 찾을 수 없습니다: ${job.planId}`);
+  return buildPlanPrompt(plan, job.taskIds ?? [], {
+    kind: "worktree",
+    project: job.project,
+    worktree,
+    branch: job.branch,
+    baseBranch: job.baseBranch,
+    mode: job.mode,
+  });
+}
+
+async function runClaude(job: Job, worktree: string, prompt: string, progress?: PlanProgress): Promise<boolean> {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   if (job.skipPermissions) {
     args.push("--dangerously-skip-permissions");
@@ -532,6 +571,12 @@ async function runClaude(job: Job, worktree: string): Promise<boolean> {
   let resultOk: boolean | undefined;
   const parser = createLineParser((ev) => {
     if (ev.resultOk !== undefined) resultOk = ev.resultOk;
+    if (progress && (ev.kind === "assistant" || ev.kind === "result")) {
+      progress.apply(ev.text);
+      const clean = stripMarkers(ev.text) || (ev.kind === "result" ? "완료" : "");
+      if (clean) pushLog(job, ev.kind, clean);
+      return;
+    }
     pushLog(job, ev.kind, ev.text);
   });
 
@@ -544,7 +589,7 @@ async function runClaude(job: Job, worktree: string): Promise<boolean> {
       detached: DETACH,
     });
     procs.set(job.id, child);
-    child.stdin.write(buildJobPrompt(job, worktree));
+    child.stdin.write(prompt);
     child.stdin.end();
 
     let lastActivity = Date.now();
@@ -738,7 +783,19 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
 
       // 2. claude
       setStage(job, "claude");
-      const ok = await runClaude(job, worktree);
+      let progress: PlanProgress | undefined;
+      let prompt: string;
+      if (job.planId) {
+        prompt = await buildPlanJobPrompt(job, worktree);
+        const taskIds = job.taskIds ?? [];
+        progress = createPlanProgress(job.planId, taskIds, (kind, text) => pushLog(job, kind, text));
+        await beginPlanTasks(job.planId, taskIds);
+      } else {
+        prompt = buildJobPrompt(job, worktree);
+      }
+      const ok = await runClaude(job, worktree, prompt, progress);
+      // 세션이 끝났으면 남은 태스크 상태를 확정한다 (이후 단계는 git 처리라 태스크 진행과 무관)
+      if (progress) await progress.finalize(ok);
       checkCancel();
       if (!ok) {
         // 세션이 죽었어도 변경이 있으면 아래 커밋·push 단계로 넘겨 원격에 남긴다 (pr 모드)
