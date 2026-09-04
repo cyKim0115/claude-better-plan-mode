@@ -110,7 +110,7 @@ function summarizePlan(plan) {
   for (const t of plan.tasks) counts[t.status] = (counts[t.status] ?? 0) + 1;
   const openComments = plan.comments.filter((c) => !c.resolved);
   const lines = [
-    `플랜: ${plan.title} (rev ${plan.revision})`,
+    `플랜: ${plan.title} (rev ${plan.revision})${plan.project ? ` · 프로젝트 ${plan.project}` : ""}`,
     `보드: ${BASE}/plan/${plan.id}`,
     plan.generating ? `상태: 생성 중… (완료되면 태스크가 나타납니다)` : `태스크 ${plan.tasks.length}개: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ") || "없음"}`,
   ];
@@ -143,14 +143,27 @@ server.tool(
 
 server.tool(
   "plan_create",
-  "목표(goal)로 새 실행 계획 생성을 시작하고 보드 URL을 즉시 반환한다. 생성은 백그라운드에서 수 분 걸릴 수 있으며 plan_status로 확인 가능. workdir 생략 시 현재 프로젝트 디렉토리를 대상으로 한다.",
-  { goal: z.string().describe("달성할 목표 설명"), workdir: z.string().optional().describe("계획·실행 대상 프로젝트의 절대경로") },
-  async ({ goal, workdir }) => {
+  "목표(goal)로 새 실행 계획 생성을 시작하고 보드 URL을 즉시 반환한다. 생성은 백그라운드에서 수 분 걸릴 수 있으며 plan_status로 확인 가능. project를 주면 config/projects.json 설정을 따르고 착수 시 PR/직푸시를 고를 수 있다. project 없이 workdir만 주면 그 경로에서 실행만 한다(커밋·push 없음).",
+  {
+    goal: z.string().describe("달성할 목표 설명"),
+    project: z.string().optional().describe("config/projects.json의 프로젝트 키 (지정하면 workdir는 무시된다)"),
+    workdir: z.string().optional().describe("계획·실행 대상 프로젝트의 절대경로 (project를 안 줄 때)"),
+    model: z.string().optional().describe("계획 생성 모델 (sonnet/opus 등, 생략 시 기본)"),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("계획 생성 추론 레벨"),
+  },
+  async ({ goal, project, workdir, model, effort }) => {
     await ensureServer();
     const r = await fetch(`${BASE}/api/plans`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, workdir: workdir ?? process.cwd(), async: true }),
+      body: JSON.stringify({
+        goal,
+        project,
+        workdir: project ? undefined : workdir ?? process.cwd(),
+        model,
+        effort,
+        async: true,
+      }),
       signal: AbortSignal.timeout(15_000),
     });
     const data = await r.json();
