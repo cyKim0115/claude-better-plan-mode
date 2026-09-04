@@ -21,13 +21,18 @@ Better Plan Mode를 **원격 워커**로 띄우면, 다른 PC의 Claude Code가 
 | 단계 | 하는 일 |
 |------|---------|
 | `worktree` | 메인 clone에서 `git worktree add -b agent/<id>` — 사람이 열어 둔 Unity 에디터와 폴더가 달라 락이 겹치지 않습니다 |
-| `claude` | worktree 안에서 `claude -p` 실행. 지시문 끝에 "커밋은 하되 push는 하지 말 것"이 자동으로 붙습니다 |
+| `claude` | worktree 안에서 `claude -p` 실행 (`--model`, `--effort`는 제출 시 선택). 지시문 끝에 "커밋은 하되 push는 하지 말 것"이 자동으로 붙고, git add/commit은 승인 없이 허용됩니다 |
 | `commit` | 세션이 커밋을 남기지 않았으면 워커가 대신 커밋합니다. 변경이 없으면 여기서 성공 종료 |
-| `verify` | `projects.json`에 `unityPath`가 있으면 `-batchmode -nographics -quit` 컴파일 검증 (선택) |
-| `push` / `pr` | `pr` 모드: 브랜치 push + `gh pr create` · `direct` 모드: 기본 브랜치 위로 rebase 후 push |
-| `cleanup` | 성공 시 worktree 제거. 실패·취소 시에는 확인할 수 있게 남겨 둡니다 |
+| `push` | `pr` 모드는 **검증 전에** 브랜치를 push합니다 — 검증이 오래 걸리거나 죽어도 작업물은 원격에 남습니다 |
+| `verify` | `projects.json`에 `unityPath`가 있으면 `-batchmode -nographics -quit` 컴파일 검증. 결과(`passed/failed/timeout/skipped`)는 PR 본문·알림에 남습니다 |
+| `pr` | `gh pr create`. 검증이 실패·시간 초과면 제목에 `[검증 …]`이 붙어 머지 전 확인을 요구합니다 · `direct` 모드: 검증 통과 시에만 기본 브랜치 위로 rebase 후 push |
+| `cleanup` | 검증을 통과·생략한 성공 잡만 worktree 제거. 그 외에는 확인·재개할 수 있게 남겨 둡니다 |
 
 같은 프로젝트의 잡은 **한 번에 하나만** 실행됩니다(프로젝트별 직렬 큐). 다른 프로젝트끼리는 동시에 돌 수 있습니다.
+
+### 멈추지 않게 하는 장치
+
+모든 외부 프로세스(claude, Unity, git, gh)에 워치독이 붙습니다 — 전체 상한과 "출력 없이 멈춤" 감지, 둘 다입니다. 걸리면 프로세스 트리를 죽이고 잡을 확정하며, 워크트리는 남깁니다. 실패·취소한 잡은 `job_resume`(보드의 "이어서 마무리")으로 커밋 단계부터 push·PR까지 이어서 끝낼 수 있고, Unity 검증 때문에 막혔으면 `skipVerify`로 건너뛸 수 있습니다. 기준 시간은 `.env.example`의 `WORKER_*_MIN` 항목을 보세요.
 
 ## 서브 PC 세팅
 
@@ -44,8 +49,10 @@ cp config/projects.example.json config/projects.json
 |------|------|
 | `path` | 메인 clone 절대경로 (worktree를 분기할 기준 리포) |
 | `baseBranch` | `master` / `main` — worktree 시작점이자 PR base |
-| `allowDirect` | `true`일 때만 `mode: "direct"` 허용. 기본 `false` |
-| `unityPath` | 있으면 push 전에 배치모드 컴파일 검증. 첫 임포트는 수 분 걸립니다 |
+| `allowDirect` | 기본 허용. `false`면 `mode: "direct"` 제출을 거부 |
+| `unityPath` | 있으면 배치모드 컴파일 검증 |
+| `seedUnityLibrary` | `true`면 메인 clone의 `Library/`를 APFS clonefile로 복사해 첫 임포트를 건너뜁니다 (macOS) |
+| `defaultModel` / `defaultEffort` | 이 프로젝트 잡의 기본 모델·추론 레벨. 제출 시 지정하면 그쪽이 우선 |
 | `setupCommand` | worktree 생성 직후 실행할 셸 명령 (예: `npm install`) |
 
 ### 2. 빌드 후 기동
@@ -94,11 +101,12 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp \
 | 툴 | 동작 |
 |----|------|
 | `worker_projects` | 등록된 프로젝트 키 목록 |
-| `job_submit` | 잡 제출 → `jobId`와 보드 URL 즉시 반환 (실행은 백그라운드) |
-| `job_status` | 상태·단계·PR 링크·오류 + 최근 로그 8줄 |
+| `job_submit` | 잡 제출 → `jobId`와 보드 URL 즉시 반환 (실행은 백그라운드). `mode`, `model`, `effort`, `maxTurns` 선택 |
+| `job_status` | 상태·단계·검증 결과·PR 링크·오류·마지막 활동 시각 + 최근 로그 8줄 |
 | `job_logs` | `since` 커서로 증분 로그 |
 | `job_list` | 최근 잡 목록 |
 | `job_cancel` | 대기/실행 중 잡 취소 (worktree는 남김) |
+| `job_resume` | 실패·취소한 잡을 커밋 단계부터 이어서 push·PR까지 마무리. `skipVerify`로 검증 생략 가능 |
 | `worker_screenshot` | 서브 PC 화면 캡처를 이미지로 반환 |
 
 ## 사용 중 확인하는 곳

@@ -123,10 +123,27 @@ export interface Job {
   commitCount?: number;
   /** 실패 사유 */
   error?: string;
-  /** true면 --dangerously-skip-permissions (기본 acceptEdits) */
+  /** true면 --dangerously-skip-permissions (기본 acceptEdits + git 커밋 허용) */
   skipPermissions?: boolean;
+  /** claude --model (alias 또는 전체 이름). 생략 시 워커 PC의 기본 모델 */
+  model?: string;
+  /** claude --effort */
+  effort?: JobEffort;
+  /** claude --max-turns */
+  maxTurns?: number;
+  /** Unity 배치모드 검증 결과. pr 모드는 실패해도 PR까지 올리고 결과를 본문·알림에 남긴다 */
+  verify?: JobVerifyResult;
+  /** 마지막으로 로그가 붙은 시각 — 워치독·보드의 "멈춤" 판정 기준 */
+  lastActivityAt?: string;
+  /** job_resume으로 이어 돌린 횟수 */
+  resumeCount?: number;
   log: RunLogLine[];
 }
+
+export type JobVerifyResult = "passed" | "failed" | "timeout" | "skipped";
+
+export type JobEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export const JOB_EFFORTS: readonly JobEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** projects.json 항목 */
 export interface ProjectConfig {
@@ -134,12 +151,20 @@ export interface ProjectConfig {
   path: string;
   /** 기본 브랜치 (master / main) */
   baseBranch: string;
-  /** direct 모드 허용 여부 — 기본 false */
+  /** direct 모드(기본 브랜치 직푸시) 허용 여부 — 기본 true. 잠그려면 false */
   allowDirect?: boolean;
+  /** 이 프로젝트 잡의 기본 모델/추론 레벨 (job_submit에서 지정하면 그쪽이 우선) */
+  defaultModel?: string;
+  defaultEffort?: JobEffort;
   /** Unity 프로젝트면 배치모드 컴파일 검증에 쓸 Unity 실행 파일 경로 (없으면 검증 생략) */
   unityPath?: string;
   /** 참고용 — 이 프로젝트의 unity-mcp 브리지 포트 */
   unityMcpPort?: number;
   /** worktree 생성 후 실행할 셸 명령 (예: 의존성 설치) */
   setupCommand?: string;
+  /**
+   * macOS 전용. 메인 clone의 Library/를 APFS clonefile(cp -c)로 worktree에 복사해
+   * Unity 첫 임포트(수십 분)를 건너뛴다. 에디터가 열린 채 복사하면 일부 캐시가 재생성될 수 있다.
+   */
+  seedUnityLibrary?: boolean;
 }

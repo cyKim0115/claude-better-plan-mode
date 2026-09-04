@@ -132,13 +132,21 @@ function text(s) {
   return { content: [{ type: "text", text: s }] };
 }
 
+function ago(iso) {
+  if (!iso) return "-";
+  const s = Math.max(0, Math.round((Date.now() - +new Date(iso)) / 1000));
+  return s < 60 ? `${s}초 전` : s < 3600 ? `${Math.floor(s / 60)}분 전` : `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분 전`;
+}
+
 function fmtJob(j, boardUrl) {
   const lines = [
     `job ${j.id}`,
     `제목: ${j.title}`,
-    `프로젝트: ${j.project} · 모드: ${j.mode} · 브랜치: ${j.branch ?? "-"}`,
-    `상태: ${j.status} (단계: ${j.stage})`,
+    `프로젝트: ${j.project} · 모드: ${j.mode} · 브랜치: ${j.branch ?? "-"}` +
+      `${j.model ? ` · 모델: ${j.model}` : ""}${j.effort ? ` · effort: ${j.effort}` : ""}`,
+    `상태: ${j.status} (단계: ${j.stage})${j.status === "running" ? ` · 마지막 활동: ${ago(j.lastActivityAt)}` : ""}`,
   ];
+  if (j.verify) lines.push(`Unity 검증: ${j.verify}`);
   if (j.commitCount !== undefined) lines.push(`커밋: ${j.commitCount}`);
   if (j.prUrl) lines.push(`PR: ${j.prUrl}`);
   if (j.error) lines.push(`오류: ${j.error}`);
@@ -159,7 +167,13 @@ function createServer(req) {
     async () => {
       const data = await api("/api/jobs");
       const projects = data.projects ?? [];
-      return text(projects.length ? `등록된 프로젝트: ${projects.join(", ")}` : "등록된 프로젝트가 없습니다 (config/projects.json)");
+      if (projects.length === 0) return text("등록된 프로젝트가 없습니다 (config/projects.json)");
+      const lines = projects.map(
+        (p) =>
+          `- ${p.key}  (base: ${p.baseBranch}, direct: ${p.allowDirect ? "허용" : "잠김"}, Unity 검증: ${p.unityVerify ? "켜짐" : "없음"}` +
+          `${p.defaultModel ? `, 기본 모델: ${p.defaultModel}` : ""}${p.defaultEffort ? `, 기본 effort: ${p.defaultEffort}` : ""})`
+      );
+      return text(`등록된 프로젝트:\n${lines.join("\n")}\n\neffort 선택지: ${(data.efforts ?? []).join(" | ")}`);
     }
   );
 
@@ -167,25 +181,49 @@ function createServer(req) {
     "job_submit",
     {
       description:
-        "워커 PC에 작업을 제출한다. 즉시 jobId를 반환하고 백그라운드에서 worktree → claude -p → 커밋 → (Unity 검증) → push/PR 순으로 실행된다. " +
-        "완료는 job_status로 폴링하거나 Slack/Discord 웹훅으로 통지된다. mode=pr(기본)은 전용 브랜치+PR, mode=direct는 기본 브랜치에 바로 push(프로젝트가 허용할 때만).",
+        "워커 PC에 작업을 제출한다. 즉시 jobId를 반환하고 백그라운드에서 worktree → claude -p → 커밋 → push → (Unity 검증) → PR 순으로 실행된다. " +
+        "완료는 job_status로 폴링하거나 Slack/Discord 웹훅으로 통지된다. mode=pr(기본)은 전용 브랜치+PR, mode=direct는 기본 브랜치에 바로 push. " +
+        "model/effort로 워커 세션의 모델·추론 레벨을 고를 수 있다 (생략 시 프로젝트 기본값 → 워커 PC 기본값).",
       inputSchema: {
         project: z.string().describe("worker_projects가 돌려준 프로젝트 키"),
         prompt: z.string().describe("워커 세션(claude -p)에 줄 지시문. 구체적일수록 좋다."),
         title: z.string().optional().describe("짧은 제목 — 커밋/PR/알림에 쓰임. 생략 시 prompt 첫 줄"),
-        mode: z.enum(["pr", "direct"]).optional().describe("pr(기본) | direct"),
-        skipPermissions: z.boolean().optional().describe("true면 --dangerously-skip-permissions (기본 acceptEdits)"),
+        mode: z.enum(["pr", "direct"]).optional().describe("pr(기본): 브랜치 push + PR | direct: 기본 브랜치에 직접 push"),
+        model: z.string().optional().describe("claude --model 값. alias(sonnet, opus, haiku, fable) 또는 전체 이름"),
+        effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("claude --effort 추론 레벨"),
+        maxTurns: z.number().int().min(1).max(1000).optional().describe("claude --max-turns 상한"),
+        skipPermissions: z.boolean().optional().describe("true면 --dangerously-skip-permissions (기본 acceptEdits + git 커밋 허용)"),
       },
     },
-    async ({ project, prompt, title, mode, skipPermissions }) => {
+    async ({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions }) => {
       const data = await api("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ project, prompt, title, mode, skipPermissions }),
+        body: JSON.stringify({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions }),
       });
       return text(
         `잡을 제출했습니다.\njobId: ${data.id}\n브랜치: ${data.branch ?? "(실행 시 배정)"}\n보드: ${boardUrl}/jobs/${data.id}\n` +
           `사용자에게 보드 URL을 안내하고, 진행 확인은 job_status(jobId)로 하세요. 완료 시 웹훅 알림이 갑니다.`
       );
+    }
+  );
+
+  server.registerTool(
+    "job_resume",
+    {
+      description:
+        "실패·취소·중단된 잡을 worktree 그대로 두고 커밋 단계부터 이어서 마무리한다(push → 검증 → PR). claude 세션은 다시 돌리지 않는다. " +
+        "Unity 검증이 시간 초과·실패로 막혔으면 skipVerify=true로 검증 없이 마무리할 수 있다.",
+      inputSchema: {
+        jobId: z.string(),
+        skipVerify: z.boolean().optional().describe("true면 Unity 검증 생략"),
+      },
+    },
+    async ({ jobId, skipVerify }) => {
+      const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/resume`, {
+        method: "POST",
+        body: JSON.stringify({ skipVerify }),
+      });
+      return text(`재개 요청 완료 (${data.resumeCount}회째): ${data.id} → ${data.status}\n보드: ${boardUrl}/jobs/${data.id}\n진행은 job_status로 확인하세요.`);
     }
   );
 

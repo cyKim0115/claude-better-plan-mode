@@ -30,7 +30,7 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 
 **시크릿·로컬 데이터**: `.env.local`, `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, `WORKER_TOKEN`, ngrok 토큰, `ANTHROPIC_API_KEY` 값을 읽거나 출력하거나 커밋하지 않는다. `data/`는 gitignore된 실사용자 플랜·잡 데이터, `config/projects.json`은 로컬 경로가 든 설정 — 예시가 필요하면 새 파일을 만들지 말고 구조만 `lib/types.ts`·`projects.example.json`에서 인용한다.
 
-**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). `direct` 모드는 `projects.json`의 `allowDirect: true`일 때만 열린다 — 기본값을 바꾸지 않는다. 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유한다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
+**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `exec`/`runClaude`의 워치독(상한 + 무출력 정지)을 거친다 — 워치독 없는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용). 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
 
 **TypeScript**: `any` 금지 (`unknown` + 좁히기). 외부 경계(Agent 응답, MCP 인자, 요청 본문)는 파싱 후 검증한다 — `lib/agent.ts`의 `extractJson` + Raw* 인터페이스 패턴을 따른다. 서버 전용 모듈(`lib/store.ts`, `lib/runner.ts`)을 클라이언트 컴포넌트에서 import하지 않는다.
 

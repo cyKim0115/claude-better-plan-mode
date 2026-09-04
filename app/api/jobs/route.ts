@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listJobs, submitJob, loadProjects } from "@/lib/jobs";
-import type { Job } from "@/lib/types";
+import { JOB_EFFORTS, type Job, type JobEffort, type ProjectConfig } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -10,44 +10,57 @@ function summarize(j: Job) {
     project: j.project,
     title: j.title,
     mode: j.mode,
+    model: j.model,
+    effort: j.effort,
     status: j.status,
     stage: j.stage,
+    verify: j.verify,
     createdAt: j.createdAt,
     startedAt: j.startedAt,
     endedAt: j.endedAt,
+    lastActivityAt: j.lastActivityAt,
     branch: j.branch,
     prUrl: j.prUrl,
     commitCount: j.commitCount,
     error: j.error,
+    resumeCount: j.resumeCount,
+  };
+}
+
+function projectSummary(key: string, p: ProjectConfig) {
+  return {
+    key,
+    baseBranch: p.baseBranch,
+    allowDirect: p.allowDirect !== false,
+    unityVerify: Boolean(p.unityPath),
+    defaultModel: p.defaultModel,
+    defaultEffort: p.defaultEffort,
   };
 }
 
 /** 잡 목록 + 등록된 프로젝트 목록 */
 export async function GET() {
   const jobs = await listJobs();
-  let projects: string[] = [];
+  let projects: ReturnType<typeof projectSummary>[] = [];
   try {
-    projects = Object.keys(await loadProjects());
+    projects = Object.entries(await loadProjects()).map(([k, p]) => projectSummary(k, p));
   } catch {
     // 설정 파일이 없으면 빈 목록 — 제출 시 오류로 안내된다
   }
-  return NextResponse.json({ projects, jobs: jobs.map(summarize) });
+  return NextResponse.json({ projects, efforts: JOB_EFFORTS, jobs: jobs.map(summarize) });
 }
 
 /** 잡 제출 — 즉시 id를 돌려주고 백그라운드 큐에서 실행 */
 export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => null)) as {
-    project?: unknown;
-    prompt?: unknown;
-    title?: unknown;
-    mode?: unknown;
-    skipPermissions?: unknown;
-  } | null;
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body || typeof body.project !== "string" || typeof body.prompt !== "string") {
     return NextResponse.json({ error: "project, prompt가 필요합니다" }, { status: 400 });
   }
   if (body.mode !== undefined && body.mode !== "pr" && body.mode !== "direct") {
     return NextResponse.json({ error: "mode는 pr 또는 direct" }, { status: 400 });
+  }
+  if (body.effort !== undefined && !(JOB_EFFORTS as readonly unknown[]).includes(body.effort)) {
+    return NextResponse.json({ error: `effort는 ${JOB_EFFORTS.join(" | ")}` }, { status: 400 });
   }
   try {
     const job = await submitJob({
@@ -56,6 +69,9 @@ export async function POST(req: NextRequest) {
       title: typeof body.title === "string" ? body.title : undefined,
       mode: body.mode as "pr" | "direct" | undefined,
       skipPermissions: body.skipPermissions === true,
+      model: typeof body.model === "string" && body.model ? body.model : undefined,
+      effort: body.effort as JobEffort | undefined,
+      maxTurns: typeof body.maxTurns === "number" ? body.maxTurns : undefined,
       port: Number(req.nextUrl.port) || 3000,
     });
     return NextResponse.json({ id: job.id, status: job.status, branch: job.branch }, { status: 201 });

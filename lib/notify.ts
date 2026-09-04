@@ -327,21 +327,31 @@ export async function notifyJobFinished(job: Job, port: number): Promise<void> {
       job.error ||
       (ok ? "완료 (요약 없음)" : cancelled ? "사용자 요청으로 취소됨" : "실패 — 보드에서 로그를 확인하세요.");
 
+    const verifyBad = job.verify === "failed" || job.verify === "timeout";
     const fields: NoticeField[] = [
       { name: "프로젝트", value: job.project, inline: true },
-      { name: "모드", value: job.mode === "pr" ? "PR" : "master 직푸시", inline: true },
+      { name: "모드", value: job.mode === "pr" ? "PR" : `${job.baseBranch} 직푸시`, inline: true },
       { name: "소요 시간", value: duration(job.startedAt ?? job.createdAt, job.endedAt), inline: true },
       { name: "브랜치", value: job.branch ?? "-", inline: true },
     ];
     if (job.commitCount !== undefined) fields.push({ name: "커밋", value: String(job.commitCount), inline: true });
+    if (job.verify && job.verify !== "skipped") {
+      fields.push({
+        name: "Unity 검증",
+        value: job.verify === "passed" ? "통과" : job.verify === "failed" ? "실패 — 머지 전 확인" : "시간 초과/정지 — 머지 전 확인",
+        inline: true,
+      });
+    }
+    if (job.model || job.effort) fields.push({ name: "모델", value: `${job.model ?? "기본"}${job.effort ? ` / ${job.effort}` : ""}`, inline: true });
     if (job.stage) fields.push({ name: "마지막 단계", value: job.stage, inline: true });
+    if (!ok && job.worktree) fields.push({ name: "이어서 마무리", value: `job_resume 또는 보드의 "이어서 마무리" 버튼 (worktree: ${job.worktree})` });
 
     const extraLinks = [...links.links];
     if (job.prUrl) extraLinks.unshift({ label: "PR", url: job.prUrl });
 
     await sendNotice({
-      tone: ok ? "success" : cancelled ? "warning" : "failure",
-      headline: `${ok ? "잡 완료" : cancelled ? "잡 취소" : "잡 실패"}: ${job.title}`,
+      tone: ok ? (verifyBad ? "warning" : "success") : cancelled ? "warning" : "failure",
+      headline: `${ok ? (verifyBad ? "잡 완료 (검증 확인 필요)" : "잡 완료") : cancelled ? "잡 취소" : "잡 실패"}: ${job.title}`,
       title: `${job.title} — ${job.project}`,
       url: job.prUrl ?? links.primary,
       description,

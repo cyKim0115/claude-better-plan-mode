@@ -54,8 +54,10 @@ cp config/projects.example.json config/projects.json
 
 - `path` — Mac 안의 메인 clone 절대경로
 - `baseBranch` — TeenipingTycoon은 `master`
-- `allowDirect` — `direct` 모드(기본 브랜치 직푸시)를 쓰려면 `true`. 기본 `false` 권장
-- `unityPath` — 있으면 push 전에 Unity 배치모드 컴파일 검증. **첫 임포트가 수 분 걸리므로 처음엔 줄을 지우고 시작**하세요
+- `allowDirect` — 기본 허용. `direct`(기본 브랜치 직푸시)를 막으려면 `false`
+- `unityPath` — 있으면 Unity 배치모드 컴파일 검증. `pr` 모드는 **push를 먼저 하고** 검증하므로 검증이 오래 걸리거나 죽어도 작업물은 원격에 남고, PR 제목에 `[검증 실패/시간 초과]`가 붙습니다. `direct` 모드는 검증을 통과해야 push합니다
+- `seedUnityLibrary` — `true`면 메인 clone의 `Library/`를 APFS clonefile(`cp -c`)로 worktree에 복사해 **첫 임포트(수십 분)를 건너뜁니다**. 에디터가 열린 채 복사해도 Unity가 어긋난 캐시는 다시 만듭니다
+- `defaultModel` / `defaultEffort` — 이 프로젝트 잡의 기본 모델·추론 레벨. 제출할 때 지정하면 그쪽이 우선
 
 ### 1-4. 기동 테스트
 
@@ -152,6 +154,16 @@ Claude Code를 아무 디렉터리에서나 열고:
 
 Claude가 `job_submit`을 호출하고 **jobId와 보드 URL**을 돌려줍니다. 여기서 Windows 세션을 닫아도 작업은 Mac에서 계속 됩니다.
 
+말로 고를 수 있는 것:
+
+| 선택 | 말하는 법 | 생략하면 |
+|---|---|---|
+| PR / 직푸시 | "PR 모드로" · "master에 바로 올려" | PR |
+| 모델 | "opus로" · "sonnet으로 빠르게" | 프로젝트 `defaultModel` → Mac 기본 |
+| 추론 레벨 | "effort max로" · "깊게 생각해서" · "가볍게" | 프로젝트 `defaultEffort` → Mac 기본 |
+
+보드 `http://macmini-macmini:3000/jobs`의 제출 폼에도 같은 선택지가 있습니다.
+
 ### 2-2. 진행 확인
 
 | 방법 | 언제 |
@@ -173,11 +185,29 @@ Slack에 결과·PR 링크·소요 시간이 옵니다.
 | 상황 | 방법 |
 |---|---|
 | 방향이 틀렸다 | "job 취소하고 이렇게 다시" → `job_cancel` + 재제출 |
+| 멈춘 것 같다 | `job_status`의 "마지막 활동 N분 전" 확인. 워치독이 알아서 죽이고 확정합니다(claude 20분 무응답 / Unity 10분 무출력). 급하면 `job_cancel` |
+| 실패·취소됐는데 변경은 살리고 싶다 | "job 마저 끝내" → `job_resume`. worktree 그대로 커밋 → push → 검증 → PR을 이어서 합니다. 검증 때문에 막혔으면 "검증 없이" → `skipVerify` |
 | 직접 봐야 한다 | Parsec으로 Mac 접속. **에이전트 worktree(`~/repo/_worktrees/…`)가 아니라 메인 clone을 여세요** — 같은 폴더는 Unity가 락을 겁니다 |
-| 실패했다 | 보드에서 로그 확인. worktree는 남아 있으니 Parsec으로 들어가 이어서 고치거나, 새 잡으로 재시도 |
 | 다음 잡 | 바로 제출해도 됩니다. 같은 프로젝트는 순서대로, 다른 프로젝트는 동시에 돕니다 |
 
+보드의 잡 상세 화면에도 **취소 / 이어서 마무리 / 검증 없이 마무리** 버튼이 있습니다.
+
 일상 루프는 **지시 → Slack 알림 → PR 머지** 세 동작입니다.
+
+### 2-5. 워커가 스스로 지키는 것
+
+원격이라 "조용히 멈춘 잡"이 없도록 아래가 자동으로 돕니다. 시간은 `.env.local`에서 조절합니다.
+
+| 감시 | 기본 | 걸리면 |
+|---|---|---|
+| claude 세션 무응답 | 20분 (`WORKER_CLAUDE_STALL_MIN`) | 세션 종료. 변경이 있으면 pr 모드로 원격 보존 |
+| claude 세션 상한 | 90분 (`WORKER_CLAUDE_TIMEOUT_MIN`) | 위와 같음 |
+| Unity 로그 무출력 | 10분 (`WORKER_UNITY_STALL_MIN`) | Unity 종료. pr 모드는 PR에 `[검증 시간 초과]` 표시, direct는 실패 |
+| Unity 상한 | 45분 (`WORKER_UNITY_TIMEOUT_MIN`) | 위와 같음 |
+| git / gh 한 번 | 10분 (`WORKER_GIT_TIMEOUT_MIN`) | 실패 확정 (브랜치가 이미 push됐으면 그 사실을 오류에 남김) |
+| 프로세스도 활동도 없음 | 15분 (`WORKER_SWEEP_STALL_MIN`) | 스위퍼가 실패 확정 |
+
+실패로 확정된 잡은 항상 worktree가 남고, Slack 알림에 "이어서 마무리" 안내가 붙습니다.
 
 ---
 
@@ -215,8 +245,10 @@ cd ~/repo/claude-better-plan-mode && npm run worker
 | Windows에서 연결 거부 | Tailscale 양쪽 켜졌는지, `WORKER_BIND`가 `0.0.0.0`인지, 브라우저에서 보드가 열리는지 |
 | `worker_screenshot` 실패 | 화면 기록 권한 / GUI 세션 없음(SSH로 띄웠을 때). launchd로 다시 |
 | PR 생성 실패, 브랜치는 push됨 | `gh auth login`. 브랜치는 이미 올라가 있으니 GitHub에서 수동 PR |
-| direct rebase 실패 | 충돌. worktree가 남아 있으니 Parsec으로 들어가 해결 후 수동 push |
-| Unity 검증 실패 | `data/jobs/<id>-unity.log` 확인. 검증을 끄려면 `projects.json`의 `unityPath` 삭제 |
+| direct rebase 실패 | 충돌. worktree가 남아 있으니 Parsec으로 들어가 해결 후 `job_resume` |
+| Unity 검증 실패·시간 초과 | `data/jobs/<id>-unity.log` 확인. pr 모드면 PR은 이미 올라가 있음. 검증을 끄려면 `projects.json`의 `unityPath` 삭제, 첫 임포트가 원인이면 `seedUnityLibrary: true` |
+| 워커 세션이 커밋을 못 함 (`requires approval`) | 기본 `--allowedTools`에 git add/commit이 들어 있어 보통 안 생김. 생겨도 워커가 대신 커밋함. 다른 명령이 막히면 `WORKER_CLAUDE_ALLOWED_TOOLS`에 추가 |
+| `running`인데 오래 멈춤 | 2-5의 워치독이 처리. 바로 정리하려면 `job_cancel` → `job_resume` |
 
 ### 남은 worktree 정리
 

@@ -2,9 +2,9 @@
 name: remote-worker
 description: >-
   서브 PC(mac-worker MCP)에 코드 작업을 위임하고 결과를 받는 방법. 사용자가 "mac-worker로", "서브 PC에서",
-  "맥에서 돌려", "원격으로 시켜", "워커에 맡겨", "TeenipingTycoon 작업 시켜", 잡 상태·로그·취소·화면 확인을
-  요청할 때 사용. worker_projects / job_submit / job_status / job_logs / job_list / job_cancel /
-  worker_screenshot 툴이 보이면 이 스킬을 따른다.
+  "맥에서 돌려", "원격으로 시켜", "워커에 맡겨", "TeenipingTycoon 작업 시켜", 잡 상태·로그·취소·재개·화면 확인,
+  PR/직푸시·모델·추론 레벨 선택을 요청할 때 사용. worker_projects / job_submit / job_status / job_logs /
+  job_list / job_cancel / job_resume / worker_screenshot 툴이 보이면 이 스킬을 따른다.
 ---
 
 # Remote Worker
@@ -18,15 +18,31 @@ description: >-
 1. **프로젝트 확인** — 처음이거나 프로젝트 이름이 불확실하면 `worker_projects`. 사용자가 말한 이름이
    목록에 없으면 가장 가까운 키를 제안하고 확인받는다. 추측으로 제출하지 않는다.
 2. **모드 결정** — 사용자가 말하지 않으면 `pr`. `direct`(기본 브랜치 직푸시)는 사용자가 **명시**했을 때만.
-   프로젝트가 direct를 막아 두었으면 오류가 돌아온다 — 그대로 전달하고 pr로 재제출할지 묻는다.
-3. **지시문 작성** — `job_submit`의 `prompt`는 저쪽 세션이 받는 전부다. 아래 "지시문" 절을 따른다.
-4. **제출 후 보고** — `job_submit`은 즉시 `jobId`와 보드 URL을 돌려준다. 사용자에게 다음 세 가지를 전한다:
+   프로젝트가 direct를 잠가 두었으면(`worker_projects`에 "잠김") 오류가 돌아온다 — 그대로 전달하고 pr로 재제출할지 묻는다.
+3. **모델·추론 레벨** — 사용자가 "opus로", "빠르게/sonnet으로", "깊게 생각해서/effort max" 같이 말하면
+   `model`·`effort`에 넣는다. 말하지 않으면 **둘 다 생략**한다 (프로젝트 기본값 → 워커 PC 기본값 순으로 적용된다).
+   `effort`는 `low | medium | high | xhigh | max`. 모델은 alias(`sonnet`, `opus`, `haiku`, `fable`) 또는 전체 이름.
+4. **지시문 작성** — `job_submit`의 `prompt`는 저쪽 세션이 받는 전부다. 아래 "지시문" 절을 따른다.
+5. **제출 후 보고** — `job_submit`은 즉시 `jobId`와 보드 URL을 돌려준다. 사용자에게 다음 세 가지를 전한다:
    jobId(앞 8자리), 보드 URL, "끝나면 Slack으로 알림이 간다". 그리고 **기다리지 않는다.**
-5. **상태 확인** — 사용자가 물을 때만 `job_status`. 자동으로 반복 폴링하지 않는다 (잡은 수 분~수십 분 걸린다).
-   자세한 로그가 필요하면 `job_logs`를 `since` 커서로 증분 조회.
-6. **완료 처리** — `succeeded`면 PR 링크(또는 direct면 "master 반영됨, git pull 필요")를 전한다.
-   `failed`면 `error`와 마지막 단계(`stage`)를 전하고, 로그에서 원인 한 줄을 뽑아 준다. worktree는 남아 있으니
-   사용자가 직접 볼 수 있다는 것도 알린다.
+6. **상태 확인** — 사용자가 물을 때만 `job_status`. 자동으로 반복 폴링하지 않는다 (잡은 수 분~수십 분 걸린다).
+   `running`이면 "마지막 활동 N분 전"도 같이 전한다. 자세한 로그가 필요하면 `job_logs`를 `since` 커서로 증분 조회.
+7. **완료 처리** — `succeeded`면 PR 링크(또는 direct면 "기본 브랜치 반영됨, git pull 필요")를 전한다.
+   `Unity 검증: failed/timeout`이 붙어 있으면 PR은 올라갔지만 **머지 전 확인이 필요**하다고 반드시 말한다.
+   `failed`면 `error`와 마지막 단계(`stage`)를 전하고, 로그에서 원인 한 줄을 뽑아 준다.
+
+## 멈추거나 실패했을 때 — 반드시 마무리한다
+
+원격 잡은 "조용히 멈춘 상태"로 두지 않는다. 워커 자체가 워치독으로 멈춘 프로세스를 죽이고 잡을 확정하지만,
+그 뒤 처리는 이 세션의 몫이다.
+
+- `failed` / `cancelled` 인데 worktree가 남아 있으면 → **`job_resume(jobId)`** 로 커밋 단계부터 이어서 push·PR까지 끝낸다.
+  claude 세션은 다시 돌지 않는다. 이미 만들어진 변경을 원격에 올리는 용도다.
+- 실패 원인이 Unity 검증(시간 초과·컴파일 실패)이고 사용자가 "그냥 올려"라고 하면 → `job_resume(jobId, skipVerify: true)`.
+- `pr` 모드는 검증 전에 브랜치를 먼저 push하므로, 검증이 죽어도 작업물은 원격에 있다. 그래도 PR이 없으면 `job_resume`.
+- `direct` 모드는 검증을 통과해야만 push한다. 실패 시 선택지는 둘: `job_resume(skipVerify)` 또는 pr 모드로 재제출.
+- 변경 자체가 잘못됐으면 resume하지 말고 새 잡으로 재제출한다.
+- `running`인데 마지막 활동이 30분 넘게 없으면 워치독이 곧 처리한다. 사용자가 급하면 `job_cancel` → `job_resume`.
 
 ## 지시문(prompt) 쓰는 법
 
@@ -56,7 +72,7 @@ prompt: LobbyPopup 프리팹 우상단에 닫기 버튼을 추가하고 OnClickC
 ## 취소·재제출
 
 - "취소해" → `job_cancel(jobId)`. 실행 중이던 프로세스가 죽고 worktree는 남는다.
-- "다시 시켜" → 취소 후 새 `job_submit`. 이전 jobId를 재사용하지 않는다.
+- "다시 시켜"(내용을 바꿔서) → 취소 후 새 `job_submit`. "마저 끝내"(내용은 그대로) → `job_resume`.
 - 같은 프로젝트 잡은 순서대로 실행된다. 여러 개를 연달아 제출해도 되지만, 서로 의존하는 작업이면
   앞 잡이 끝난 뒤 제출하라고 권한다 (앞 잡의 PR이 머지되기 전엔 뒤 잡이 그 변경을 못 본다).
 

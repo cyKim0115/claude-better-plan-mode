@@ -2,20 +2,34 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { JobMode, JobStatus } from "@/lib/types";
+import type { JobEffort, JobMode, JobStatus, JobVerifyResult } from "@/lib/types";
 
 interface JobSummary {
   id: string;
   project: string;
   title: string;
   mode: JobMode;
+  model?: string;
+  effort?: JobEffort;
   status: JobStatus;
   stage: string;
+  verify?: JobVerifyResult;
   createdAt: string;
   endedAt?: string;
+  lastActivityAt?: string;
   branch?: string;
   prUrl?: string;
   error?: string;
+  resumeCount?: number;
+}
+
+interface ProjectSummary {
+  key: string;
+  baseBranch: string;
+  allowDirect: boolean;
+  unityVerify: boolean;
+  defaultModel?: string;
+  defaultEffort?: JobEffort;
 }
 
 export function statusBadge(status: JobStatus): string {
@@ -26,24 +40,36 @@ export function statusBadge(status: JobStatus): string {
   return "queued";
 }
 
+export function ago(iso?: string): string {
+  if (!iso) return "-";
+  const s = Math.max(0, Math.round((Date.now() - +new Date(iso)) / 1000));
+  return s < 60 ? `${s}초 전` : s < 3600 ? `${Math.floor(s / 60)}분 전` : `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분 전`;
+}
+
+const MODEL_PRESETS = ["", "sonnet", "opus", "haiku", "fable"];
+
 export default function JobList() {
   const router = useRouter();
   const [jobs, setJobs] = useState<JobSummary[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [efforts, setEfforts] = useState<JobEffort[]>([]);
   const [project, setProject] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<JobMode>("pr");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/jobs");
-      const data = (await res.json()) as { projects: string[]; jobs: JobSummary[] };
+      const data = (await res.json()) as { projects: ProjectSummary[]; efforts: JobEffort[]; jobs: JobSummary[] };
       setJobs(data.jobs);
       setProjects(data.projects);
-      setProject((p) => p || data.projects[0] || "");
+      setEfforts(data.efforts ?? []);
+      setProject((p) => p || data.projects[0]?.key || "");
     } catch {
       /* 다음 폴링에서 재시도 */
     }
@@ -55,6 +81,8 @@ export default function JobList() {
     return () => clearInterval(t);
   }, [load]);
 
+  const current = projects.find((p) => p.key === project);
+
   async function submit() {
     if (!project || !prompt.trim()) return;
     setSubmitting(true);
@@ -63,7 +91,14 @@ export default function JobList() {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, prompt, title: title || undefined, mode }),
+        body: JSON.stringify({
+          project,
+          prompt,
+          title: title || undefined,
+          mode,
+          model: model || undefined,
+          effort: effort || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "잡 제출 실패");
@@ -86,21 +121,34 @@ export default function JobList() {
           <select value={project} onChange={(e) => setProject(e.target.value)} disabled={submitting}>
             {projects.length === 0 && <option value="">프로젝트 없음 — config/projects.json 확인</option>}
             {projects.map((p) => (
-              <option key={p} value={p}>{p}</option>
+              <option key={p.key} value={p.key}>{p.key}</option>
             ))}
           </select>
           <select value={mode} onChange={(e) => setMode(e.target.value as JobMode)} disabled={submitting}>
             <option value="pr">PR 생성</option>
-            <option value="direct">기본 브랜치 직푸시</option>
+            <option value="direct" disabled={current ? !current.allowDirect : false}>
+              {current?.baseBranch ?? "기본 브랜치"} 직푸시{current && !current.allowDirect ? " (잠김)" : ""}
+            </option>
           </select>
+          <select value={model} onChange={(e) => setModel(e.target.value)} disabled={submitting} title="모델">
+            {MODEL_PRESETS.map((m) => (
+              <option key={m} value={m}>{m ? `모델: ${m}` : `모델: 기본${current?.defaultModel ? ` (${current.defaultModel})` : ""}`}</option>
+            ))}
+          </select>
+          <select value={effort} onChange={(e) => setEffort(e.target.value)} disabled={submitting} title="추론 레벨">
+            <option value="">effort: 기본{current?.defaultEffort ? ` (${current.defaultEffort})` : ""}</option>
+            {efforts.map((ef) => (
+              <option key={ef} value={ef}>effort: {ef}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 8 }}>
           <input
             type="text"
-            className="grow"
             placeholder="제목 (비우면 지시 첫 줄)"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             disabled={submitting}
-            style={{ width: "auto", flex: 1 }}
           />
         </div>
         <textarea
@@ -110,10 +158,15 @@ export default function JobList() {
           rows={4}
           disabled={submitting}
         />
-        <div className="row" style={{ marginTop: 10 }}>
+        <div className="row spread" style={{ marginTop: 10 }}>
           <button className="primary" onClick={submit} disabled={submitting || !project || !prompt.trim()}>
             {submitting ? <><span className="spinner" /> 제출 중…</> : "잡 제출"}
           </button>
+          {current && (
+            <span className="small muted">
+              base {current.baseBranch} · Unity 검증 {current.unityVerify ? "켜짐" : "없음"}
+            </span>
+          )}
         </div>
         {error && <div className="error-box">{error}</div>}
       </div>
@@ -129,9 +182,15 @@ export default function JobList() {
                 {j.status}
               </span>
               <a href={`/jobs/${j.id}`}><strong>{j.title}</strong></a>
-              <span className="muted small">{j.project} · {j.mode} · {j.stage}</span>
+              <span className="muted small">
+                {j.project} · {j.mode} · {j.stage}
+                {j.model ? ` · ${j.model}` : ""}{j.effort ? ` · ${j.effort}` : ""}
+                {j.verify && j.verify !== "skipped" ? ` · 검증 ${j.verify}` : ""}
+                {j.resumeCount ? ` · 재개 ${j.resumeCount}회` : ""}
+              </span>
             </div>
             <div className="row small muted">
+              {j.status === "running" && <span>활동 {ago(j.lastActivityAt)}</span>}
               {j.prUrl && <a href={j.prUrl} target="_blank" rel="noreferrer">PR</a>}
               <span>{new Date(j.createdAt).toLocaleString("ko-KR")}</span>
             </div>

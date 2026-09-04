@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Job, RunLogLine } from "@/lib/types";
-import { statusBadge } from "./JobList";
+import { ago, statusBadge } from "./JobList";
 
 type JobMeta = Omit<Job, "log"> & { logLength: number; log: RunLogLine[] };
 
@@ -51,14 +51,33 @@ export default function JobView({ jobId }: { jobId: string }) {
     if (autoScroll) boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
   }, [log, autoScroll]);
 
+  const [actionError, setActionError] = useState<string | null>(null);
+
   async function cancel() {
     await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+  }
+
+  async function resume(skipVerify: boolean) {
+    setActionError(null);
+    const res = await fetch(`/api/jobs/${jobId}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skipVerify }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setActionError(data.error ?? "재개 실패");
+      return;
+    }
+    // 재개하면 로그가 이어 붙으므로 폴링을 다시 시작한다
+    window.location.reload();
   }
 
   if (missing) return <div className="error-box">잡을 찾을 수 없습니다: {jobId}</div>;
   if (!meta) return <p className="muted">불러오는 중…</p>;
 
   const active = meta.status === "queued" || meta.status === "running";
+  const resumable = !active && Boolean(meta.worktree) && meta.status !== "succeeded";
 
   return (
     <div>
@@ -70,17 +89,28 @@ export default function JobView({ jobId }: { jobId: string }) {
             <span>{meta.project}</span>
             <span>· {meta.mode === "pr" ? "PR 생성" : `${meta.baseBranch} 직푸시`}</span>
             {meta.branch && <span>· {meta.branch}</span>}
+            {meta.model && <span>· 모델 {meta.model}</span>}
+            {meta.effort && <span>· effort {meta.effort}</span>}
+            {meta.verify && <span>· 검증 {meta.verify}</span>}
             <span>· job {meta.id.slice(0, 8)}</span>
           </div>
         </div>
         <div className="row">
+          {meta.status === "running" && <span className="small muted">마지막 활동 {ago(meta.lastActivityAt)}</span>}
           <span className={`badge ${statusBadge(meta.status)}`}>
             {meta.status === "running" && <span className="spinner" style={{ marginRight: 6 }} />}
             {meta.status} · {meta.stage}
           </span>
           {active && <button className="danger tiny" onClick={cancel}>취소</button>}
+          {resumable && (
+            <>
+              <button className="tiny" onClick={() => resume(false)}>이어서 마무리</button>
+              <button className="tiny" onClick={() => resume(true)} title="Unity 검증 없이 push/PR까지">검증 없이 마무리</button>
+            </>
+          )}
         </div>
       </div>
+      {actionError && <div className="error-box">{actionError}</div>}
 
       {(meta.prUrl || meta.error || meta.worktree) && (
         <div className="card" style={{ marginBottom: 10 }}>

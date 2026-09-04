@@ -103,7 +103,7 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp --hea
 
 Claude Desktop처럼 헤더를 못 붙이는 호스트는 stdio 브리지 `mcp/worker-client.mjs`(`WORKER_URL`, `WORKER_TOKEN` env)를 등록하면 됩니다. 메인 PC의 Claude가 워커를 어떻게 써야 하는지는 `skills/remote-worker`를 `~/.claude/skills/`에 복사해 알려줍니다.
 
-툴: `worker_projects` · `job_submit`(즉시 jobId 반환) · `job_status` · `job_logs` · `job_list` · `job_cancel` · `worker_screenshot`. 진행 상황은 보드 `/jobs`에서도 볼 수 있습니다. 자세한 설정·운영은 [원격 워커 문서](https://cykim.gitbook.io/claude-better-plan/integration/worker)와 `docs/remote-worker-runbook.md`를 보세요.
+툴: `worker_projects` · `job_submit`(즉시 jobId 반환, `mode`/`model`/`effort` 선택) · `job_status` · `job_logs` · `job_list` · `job_cancel` · `job_resume`(실패한 잡을 push·PR까지 이어서 마무리) · `worker_screenshot`. 모든 외부 프로세스에 워치독이 붙어 조용히 멈추는 잡이 없고, `pr` 모드는 검증 전에 push해 작업물을 먼저 원격에 남깁니다. 진행 상황은 보드 `/jobs`에서도 볼 수 있습니다. 자세한 설정·운영은 [원격 워커 문서](https://cykim.gitbook.io/claude-better-plan/integration/worker)와 `docs/remote-worker-runbook.md`를 보세요.
 
 ## 저장 위치 / 제약
 
