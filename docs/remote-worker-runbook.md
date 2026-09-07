@@ -220,6 +220,26 @@ Slack에 결과·PR 링크·소요 시간이 옵니다.
 
 실패로 확정된 잡은 항상 worktree가 남고, Slack 알림에 "이어서 마무리" 안내가 붙습니다.
 
+### 2-6. 잔여물 정리 (자동)
+
+남긴 worktree와 `agent/*` 브랜치는 그대로 두면 계속 쌓입니다 (Unity 프로젝트는 worktree 하나가 수 GB입니다).
+보드 서버가 기동 직후, 잡이 끝날 때마다, 그리고 한 시간마다 한 번씩 아래 기준으로 치웁니다.
+
+| 대상 | 지우는 조건 |
+|---|---|
+| worktree (작업물이 원격에 올라감) | 잡이 끝나고 48시간 (`WORKER_WORKTREE_TTL_HOURS`) |
+| worktree (커밋·push 안 된 변경이 남음) | 잡이 끝나고 168시간 (`WORKER_WORKTREE_UNSAVED_TTL_HOURS`). 커밋된 내용은 로컬 브랜치로 남습니다 |
+| worktree (잡과 짝이 없는 고아 디렉터리) | 디렉터리 mtime 기준 48시간 |
+| 로컬 `agent/*` 브랜치 | worktree가 물고 있지 않고, 원격에 올라갔거나 base에 머지됨 |
+| 원격 `agent/*` 브랜치 | PR이 머지·클로즈됐거나 base에 이미 반영됨 (`WORKER_REMOTE_CLEANUP=0`으로 끔) |
+
+실행 중·대기 중인 잡의 worktree는 건드리지 않습니다. 무언가 지워지면 Slack·Discord로 요약이 갑니다.
+`WORKER_KEEP_WORKTREE=1`이면 자동 정리도 멈추고, 보드/`worker_cleanup`에서 직접 요청할 때만 지웁니다.
+주기는 `WORKER_GC_INTERVAL_MIN`(기본 60분)입니다.
+
+worktree가 정리된 잡은 `job_resume`으로 이어서 마무리할 수 없습니다 — 새 잡으로 제출하세요.
+그 전에 이어서 할 게 있으면 기한(위 표) 안에 하면 됩니다.
+
 ---
 
 ## 3. 다시 켜기 · 문제 해결
@@ -263,7 +283,12 @@ cd ~/repo/claude-better-plan-mode && npm run worker
 
 ### 남은 worktree 정리
 
-실패·취소한 잡의 worktree는 `~/repo/_worktrees/`에 남습니다.
+**보통은 아무것도 안 해도 됩니다.** 워커가 보관 기한이 지난 잔여물을 알아서 치웁니다 (2-6 참고).
+급하게 용량을 비우거나 상태를 보고 싶을 때만 아래를 씁니다.
+
+- 보드 `/jobs` 화면 위쪽 **워크트리 정리** 패널 — 현황·용량 확인, "기한 지난 것 정리", "지금 전부 정리".
+- 메인 PC의 Claude에게: `worker_cleanup` 툴 (`dryRun: true`로 목록만 볼 수 있습니다).
+- 손으로 할 때:
 
 ```bash
 cd /Users/cykim/repo/TeenipingTycoon

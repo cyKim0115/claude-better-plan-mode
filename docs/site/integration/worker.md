@@ -26,9 +26,23 @@ Better Plan Mode를 **원격 워커**로 띄우면, 다른 PC의 Claude Code가 
 | `push` | `pr` 모드는 **검증 전에** 브랜치를 push합니다 — 검증이 오래 걸리거나 죽어도 작업물은 원격에 남습니다 |
 | `verify` | `projects.json`에 `unityPath`가 있으면 `-batchmode -nographics -quit` 컴파일 검증. 결과(`passed/failed/timeout/skipped`)는 PR 본문·알림에 남습니다 |
 | `pr` | `gh pr create`. 검증이 실패·시간 초과면 제목에 `[검증 …]`이 붙어 머지 전 확인을 요구합니다 · `direct` 모드: 검증 통과 시에만 기본 브랜치 위로 rebase 후 push |
-| `cleanup` | 검증을 통과·생략한 성공 잡만 worktree 제거. 그 외에는 확인·재개할 수 있게 남겨 둡니다 |
+| `cleanup` | 검증을 통과·생략한 성공 잡만 worktree와 로컬 브랜치를 제거합니다. 그 외에는 확인·재개할 수 있게 남겨 두고, 보관 기한이 지나면 GC가 치웁니다 |
 
 같은 프로젝트의 잡은 **한 번에 하나만** 실행됩니다(프로젝트별 직렬 큐). 다른 프로젝트끼리는 동시에 돌 수 있습니다.
+
+### 잔여물이 쌓이지 않게 하는 장치
+
+남긴 worktree와 `agent/*` 브랜치는 그대로 두면 계속 쌓입니다 — Unity 프로젝트는 worktree 하나가 수 GB입니다. 보드 서버가 기동 직후, 잡이 끝날 때마다, 그리고 `WORKER_GC_INTERVAL_MIN`(기본 60분)마다 한 번씩 정리를 돕니다.
+
+| 대상 | 지우는 조건 |
+|------|-------------|
+| worktree (작업물이 원격에 올라감) | 잡이 끝나고 `WORKER_WORKTREE_TTL_HOURS`(기본 48시간) |
+| worktree (커밋·push 안 된 변경이 남음) | 잡이 끝나고 `WORKER_WORKTREE_UNSAVED_TTL_HOURS`(기본 168시간). 커밋된 내용은 로컬 브랜치로 남습니다 |
+| worktree (잡과 짝이 없는 고아 디렉터리) | 디렉터리 mtime 기준 기본 48시간 |
+| 로컬 `agent/*` 브랜치 | worktree가 물고 있지 않고, 원격에 올라갔거나 base에 머지됐을 때 |
+| 원격 `agent/*` 브랜치 | PR이 머지·클로즈됐거나 base에 이미 반영됐을 때 (`WORKER_REMOTE_CLEANUP=0`으로 끕니다) |
+
+실행 중·대기 중인 잡의 worktree는 건드리지 않습니다. 무언가 지워지면 Slack·Discord로 요약이 갑니다. 보드 `/jobs`의 **워크트리 정리** 패널이나 `worker_cleanup` 툴로 현황을 보고 즉시 정리할 수도 있습니다. 정리된 잡은 `job_resume`으로 이어서 마무리할 수 없으니, 이어서 할 게 있으면 보관 기한 안에 하세요.
 
 ### 멈추지 않게 하는 장치
 
@@ -108,6 +122,7 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp \
 | `job_cancel` | 대기/실행 중 잡 취소 (worktree는 남김) |
 | `job_resume` | 실패·취소한 잡을 커밋 단계부터 이어서 push·PR까지 마무리. `skipVerify`로 검증 생략 가능 |
 | `worker_screenshot` | 서브 PC 화면 캡처를 이미지로 반환 |
+| `worker_cleanup` | 남은 worktree 현황 조회·즉시 정리 (`dryRun`, `force`) |
 
 ## 사용 중 확인하는 곳
 

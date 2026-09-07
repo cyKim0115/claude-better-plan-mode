@@ -8,15 +8,17 @@
 // - 잡 메타·로그는 data/jobs/<id>.json에 저장. 실행 중 프로세스 핸들은 인메모리(globalThis) — 단일 서버 프로세스 전제.
 // - 셸 문자열 보간으로 명령을 만들지 않는다. 잡 내용(제목·프롬프트)은 신뢰 입력이 아니다.
 
-import { spawn, type ChildProcess } from "child_process";
+import { type ChildProcess } from "child_process";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { JOB_EFFORTS, type Job, type JobEffort, type JobMode, type JobStage, type ProjectConfig, type RunLogLine } from "./types";
 import { getPlan, newId } from "./store";
-import { notifyJobFinished } from "./notify";
+import { notifyJobFinished, notifyWorktreeGc } from "./notify";
 import { createLineParser } from "./stream-json";
 import { beginPlanTasks, buildPlanPrompt, createPlanProgress, stripMarkers, type PlanProgress } from "./plan-run";
+import { killTree, spawnWatched, type ProcResult } from "./proc";
+import { collectGarbage, summarizeGc, type GcOptions, type GcResult } from "./worktree-gc";
 
 // ---------------------------------------------------------------------------
 // 경로·설정
@@ -54,6 +56,9 @@ type Registry = {
   __jobProcs?: Map<string, ChildProcess>;
   __jobsLoaded?: Promise<void>;
   __jobSweeper?: NodeJS.Timeout;
+  __jobGc?: NodeJS.Timeout;
+  __gcRunning?: Promise<GcResult>;
+  __lastGc?: GcResult;
 };
 const g = globalThis as unknown as Registry;
 const jobs: Map<string, Job> = g.__jobs ?? new Map();
@@ -95,6 +100,7 @@ function ensureLoaded(): Promise<void> {
         }
       }
       startSweeper();
+      startGc();
     })();
   }
   return g.__jobsLoaded;
@@ -297,8 +303,14 @@ export async function resumeJob(id: string, opts: ResumeJobOptions = {}): Promis
   if (!job) throw new Error("job not found");
   if (job.status === "running" || job.status === "queued") throw new Error(`아직 ${job.status} 상태입니다 — 먼저 취소하세요`);
   if (!job.worktree || !job.branch) throw new Error("worktree 정보가 없어 이어서 할 수 없습니다 (새 잡으로 제출하세요)");
+  if (job.worktreeRemovedAt) {
+    throw new Error(`worktree가 이미 정리됐습니다 (${job.worktreeRemovedAt}) — 새 잡으로 제출하세요`);
+  }
   const exists = await fs.stat(job.worktree).then((s) => s.isDirectory()).catch(() => false);
-  if (!exists) throw new Error(`worktree가 없습니다: ${job.worktree} — 새 잡으로 제출하세요`);
+  if (!exists) {
+    markWorktreeRemoved(job, "디스크에 없음");
+    throw new Error(`worktree가 없습니다: ${job.worktree} — 새 잡으로 제출하세요`);
+  }
   const projects = await loadProjects();
   const cfg = projects[job.project];
   if (!cfg) throw new Error(`프로젝트 설정이 사라졌습니다: ${job.project}`);
@@ -358,69 +370,17 @@ function isCancelled(job: Job) {
   return job.status === "cancelled";
 }
 
-/** 자식을 프로세스 그룹 리더로 띄운다 — Unity·claude가 낳은 손자 프로세스까지 한 번에 죽이기 위해 */
-const DETACH = process.platform !== "win32";
-
-function signalTree(proc: ChildProcess, sig: NodeJS.Signals) {
-  if (!proc.pid) return;
-  try {
-    if (DETACH) process.kill(-proc.pid, sig);
-    else proc.kill(sig);
-  } catch {
-    try {
-      proc.kill(sig);
-    } catch {
-      /* 이미 죽음 */
-    }
-  }
-}
-
+/** 실행 중인 자식(과 그 손자들)을 종료한다 — 취소·워치독 공용 */
 function killProc(jobId: string) {
   const proc = procs.get(jobId);
-  if (!proc) return;
-  signalTree(proc, "SIGTERM");
-  const t = setTimeout(() => {
-    if (proc.exitCode === null && proc.signalCode === null) signalTree(proc, "SIGKILL");
-  }, 10_000);
-  t.unref?.();
-}
-
-/**
- * exit 이후 stdio가 닫히길 기다리되 상한을 둔다.
- * 손자 프로세스가 파이프를 물고 있으면 'close'가 영영 안 오므로, exit 후 짧게만 기다린다.
- */
-function settleOnExit(child: ChildProcess, onDone: (code: number | null) => void) {
-  let done = false;
-  let exitCode: number | null = null;
-  let timer: NodeJS.Timeout | undefined;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    if (timer) clearTimeout(timer);
-    onDone(exitCode);
-  };
-  child.on("exit", (code) => {
-    exitCode = code;
-    timer = setTimeout(finish, 3_000);
-    timer.unref?.();
-  });
-  child.on("close", (code) => {
-    exitCode = code ?? exitCode;
-    finish();
-  });
+  if (proc) killTree(proc);
 }
 
 // ---------------------------------------------------------------------------
 // 외부 프로세스 실행 (워치독 포함)
 // ---------------------------------------------------------------------------
 
-interface ExecResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  /** 워치독이 죽였으면 사유 */
-  killed?: "timeout" | "stall";
-}
+type ExecResult = ProcResult;
 
 interface ExecOptions {
   cwd: string;
@@ -437,81 +397,46 @@ interface ExecOptions {
 }
 
 /** 외부 명령 실행. 인자 배열로만 넘긴다(셸 미사용). 출력은 잡 로그에 남긴다. */
-function exec(job: Job, cmd: string, args: string[], opts: ExecOptions): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    if (!opts.quiet) pushLog(job, "tool", `$ ${cmd} ${args.join(" ")}`);
-    const child = spawn(cmd, args, {
-      cwd: opts.cwd,
-      shell: opts.shell ?? false,
-      env: opts.env ?? process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: DETACH,
-    });
-    procs.set(job.id, child);
-
-    let stdout = "";
-    let stderr = "";
-    let lastActivity = Date.now();
-    const startedAt = Date.now();
-    let killed: ExecResult["killed"];
-
-    const watchdog = setInterval(() => {
-      const now = Date.now();
-      if (opts.timeoutMs && now - startedAt > opts.timeoutMs) killed = "timeout";
-      else if (opts.stallMs && now - lastActivity > opts.stallMs) killed = "stall";
-      if (killed) {
-        clearInterval(watchdog);
-        pushLog(
-          job,
-          "stderr",
-          killed === "timeout"
-            ? `워치독: ${Math.round((opts.timeoutMs ?? 0) / 60_000)}분 상한 초과 — 프로세스 종료`
-            : `워치독: ${Math.round((opts.stallMs ?? 0) / 60_000)}분간 출력 없음 — 멈춘 것으로 보고 프로세스 종료`
-        );
-        killProc(job.id);
-      }
-    }, 5_000);
-    watchdog.unref?.();
-
-    child.stdout.on("data", (c: Buffer) => {
-      lastActivity = Date.now();
-      const s = c.toString("utf8");
-      stdout += s;
-      if (stdout.length > 200_000) stdout = stdout.slice(-100_000);
-      job.lastActivityAt = new Date().toISOString();
+async function exec(job: Job, cmd: string, args: string[], opts: ExecOptions): Promise<ExecResult> {
+  if (!opts.quiet) pushLog(job, "tool", `$ ${cmd} ${args.join(" ")}`);
+  const touch = () => {
+    job.lastActivityAt = new Date().toISOString();
+  };
+  const res = await spawnWatched(cmd, args, {
+    cwd: opts.cwd,
+    shell: opts.shell,
+    env: opts.env,
+    timeoutMs: opts.timeoutMs,
+    stallMs: opts.stallMs,
+    onSpawn: (child) => procs.set(job.id, child),
+    onStdout: (s) => {
+      touch();
       opts.onStdout?.(s);
-    });
-    child.stderr.on("data", (c: Buffer) => {
-      lastActivity = Date.now();
-      const s = c.toString("utf8");
-      stderr += s;
-      if (stderr.length > 200_000) stderr = stderr.slice(-100_000);
-      job.lastActivityAt = new Date().toISOString();
+    },
+    onStderr: (s) => {
+      touch();
       opts.onStderr?.(s);
-    });
-    let settled = false;
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(watchdog);
-      procs.delete(job.id);
-      pushLog(job, "stderr", `${cmd} 실행 실패: ${err.message}`);
-      resolve({ code: null, stdout, stderr: stderr + err.message, killed });
-    });
-    settleOnExit(child, (code) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(watchdog);
-      procs.delete(job.id);
-      const out = stdout.trim();
-      const err = stderr.trim();
-      if (!opts.quiet) {
-        if (out) pushLog(job, "info", out.slice(-1500));
-        if (err) pushLog(job, code === 0 ? "info" : "stderr", err.slice(-1500));
-      }
-      resolve({ code, stdout, stderr, killed });
-    });
+    },
+    onWatchdog: (reason, limitMs) =>
+      pushLog(
+        job,
+        "stderr",
+        reason === "timeout"
+          ? `워치독: ${Math.round(limitMs / 60_000)}분 상한 초과 — 프로세스 종료`
+          : `워치독: ${Math.round(limitMs / 60_000)}분간 출력 없음 — 멈춘 것으로 보고 프로세스 종료`
+      ),
   });
+  procs.delete(job.id);
+
+  if (res.spawnError) {
+    pushLog(job, "stderr", `${cmd} 실행 실패: ${res.spawnError}`);
+  } else if (!opts.quiet) {
+    const out = res.stdout.trim();
+    const err = res.stderr.trim();
+    if (out) pushLog(job, "info", out.slice(-1500));
+    if (err) pushLog(job, res.code === 0 ? "info" : "stderr", err.slice(-1500));
+  }
+  return res;
 }
 
 function git(job: Job, cwd: string, args: string[], quiet = false) {
@@ -580,67 +505,34 @@ async function runClaude(job: Job, worktree: string, prompt: string, progress?: 
     pushLog(job, ev.kind, ev.text);
   });
 
-  const result = await new Promise<ExecResult>((resolve) => {
-    const child = spawn("claude", args, {
-      cwd: worktree,
-      shell: process.platform === "win32",
-      env: process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: DETACH,
-    });
-    procs.set(job.id, child);
-    child.stdin.write(prompt);
-    child.stdin.end();
-
-    let lastActivity = Date.now();
-    const startedAt = Date.now();
-    let killed: ExecResult["killed"];
-    const watchdog = setInterval(() => {
-      const now = Date.now();
-      if (now - startedAt > CLAUDE_TIMEOUT_MS) killed = "timeout";
-      else if (now - lastActivity > CLAUDE_STALL_MS) killed = "stall";
-      if (killed) {
-        clearInterval(watchdog);
-        pushLog(
-          job,
-          "stderr",
-          killed === "timeout"
-            ? `워치독: claude 세션 ${Math.round(CLAUDE_TIMEOUT_MS / 60_000)}분 상한 초과 — 종료`
-            : `워치독: claude 세션이 ${Math.round(CLAUDE_STALL_MS / 60_000)}분간 이벤트 없음 — 멈춘 것으로 보고 종료`
-        );
-        killProc(job.id);
-      }
-    }, 5_000);
-    watchdog.unref?.();
-
-    child.stdout.on("data", (c: Buffer) => {
-      lastActivity = Date.now();
-      parser.push(c.toString("utf8"));
-    });
-    child.stderr.on("data", (c: Buffer) => {
-      lastActivity = Date.now();
-      const t = c.toString("utf8").trim();
+  const result = await spawnWatched("claude", args, {
+    cwd: worktree,
+    shell: process.platform === "win32",
+    input: prompt,
+    timeoutMs: CLAUDE_TIMEOUT_MS,
+    stallMs: CLAUDE_STALL_MS,
+    onSpawn: (child) => procs.set(job.id, child),
+    onStdout: (s) => parser.push(s),
+    onStderr: (s) => {
+      const t = s.trim();
       if (t) pushLog(job, "stderr", t.slice(0, 1000));
-    });
-    let settled = false;
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(watchdog);
-      procs.delete(job.id);
-      pushLog(job, "stderr", `claude CLI 실행 실패: ${err.message} — claude가 PATH에 있는지 확인하세요.`);
-      resolve({ code: null, stdout: "", stderr: err.message, killed });
-    });
-    settleOnExit(child, (code) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(watchdog);
-      procs.delete(job.id);
-      parser.flush();
-      pushLog(job, "info", `claude 종료 (exit ${code}${killed ? `, 워치독 ${killed}` : ""})`);
-      resolve({ code, stdout: "", stderr: "", killed });
-    });
+    },
+    onWatchdog: (reason, limitMs) =>
+      pushLog(
+        job,
+        "stderr",
+        reason === "timeout"
+          ? `워치독: claude 세션 ${Math.round(limitMs / 60_000)}분 상한 초과 — 종료`
+          : `워치독: claude 세션이 ${Math.round(limitMs / 60_000)}분간 이벤트 없음 — 멈춘 것으로 보고 종료`
+      ),
   });
+  procs.delete(job.id);
+  parser.flush();
+  if (result.spawnError) {
+    pushLog(job, "stderr", `claude CLI 실행 실패: ${result.spawnError} — claude가 PATH에 있는지 확인하세요.`);
+    return false;
+  }
+  pushLog(job, "info", `claude 종료 (exit ${result.code}${result.killed ? `, 워치독 ${result.killed}` : ""})`);
 
   if (result.killed) return false;
   return result.code === 0 && resultOk !== false;
@@ -823,7 +715,10 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
     scheduleSave(job, true);
     if (job.commitCount === 0) {
       pushLog(job, "info", "변경 사항 없음 — push/PR을 건너뜁니다");
-      if (!KEEP_WORKTREE) await git(job, repo, ["worktree", "remove", "--force", worktree], true);
+      if (!KEEP_WORKTREE) {
+        const rm = await git(job, repo, ["worktree", "remove", "--force", worktree], true);
+        if (rm.code === 0) markWorktreeRemoved(job, "변경 사항 없음");
+      }
       finish(job, "succeeded");
       return;
     }
@@ -908,14 +803,17 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       pushed = true;
     }
 
-    // 7. cleanup — 검증을 통과·생략한 경우만. 실패/정지면 사람이 볼 수 있게 남긴다
+    // 7. cleanup — 검증을 통과·생략한 경우만. 실패/정지면 사람이 볼 수 있게 남긴다.
+    //    여기서 남긴 worktree도 보관 기한이 지나면 GC가 치운다 (runWorktreeGc).
     setStage(job, "cleanup");
     const keep = KEEP_WORKTREE || job.verify === "failed" || job.verify === "timeout";
     if (!keep) {
-      await git(job, repo, ["worktree", "remove", "--force", worktree]);
-      if (job.mode === "direct") await git(job, repo, ["branch", "-D", branch], true);
+      const rm = await git(job, repo, ["worktree", "remove", "--force", worktree]);
+      if (rm.code === 0) markWorktreeRemoved(job, "잡 완료");
+      // pr 모드 브랜치는 원격에 올라가 있으니 로컬 사본은 필요 없다 (PR 머지 뒤 원격은 GC가 정리)
+      await git(job, repo, ["branch", "-D", branch], true);
     } else {
-      pushLog(job, "info", `worktree 유지: ${worktree}`);
+      pushLog(job, "info", `worktree 유지: ${worktree} (보관 기한이 지나면 자동 정리)`);
     }
     finish(job, "succeeded", job.error);
   } catch (e) {
@@ -929,6 +827,8 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
     if (isCancelled(job) && !job.endedAt) finish(job, "cancelled", `취소됨 (${job.stage} 단계)`);
     await git(job, repo, ["worktree", "prune"], true);
     void notifyJobFinished(job, port);
+    // 잡이 끝날 때마다 기한 지난 잔여물을 훑는다 — 잡을 계속 돌리는 동안 알아서 줄어들게
+    gcSoon(port);
   }
 }
 
@@ -962,4 +862,86 @@ function startSweeper() {
     }
   }, 60_000);
   g.__jobSweeper.unref?.();
+}
+
+// ---------------------------------------------------------------------------
+// 워크트리 GC — 남겨 둔 worktree·브랜치를 기한이 지나면 반드시 치운다.
+// 잡은 일부러 흔적을 남기므로(job_resume 대비) 치우는 주체가 따로 있어야 한다.
+// 정책·판정은 lib/worktree-gc.ts, 여기서는 실행 시점과 잡 기록 반영만 맡는다.
+// ---------------------------------------------------------------------------
+
+/** GC 주기 — 서버가 떠 있는 동안 이 간격으로 한 번씩 돈다 */
+const GC_INTERVAL_MS = minutes("WORKER_GC_INTERVAL_MIN", 60);
+
+/** worktree가 사라졌음을 잡 기록에 반영한다 (보드의 "이어서 마무리"가 헛돌지 않게) */
+function markWorktreeRemoved(job: Job, note: string) {
+  if (job.worktreeRemovedAt) return;
+  job.worktreeRemovedAt = new Date().toISOString();
+  pushLog(job, "info", `worktree 정리됨: ${job.worktree} (${note})`);
+  scheduleSave(job, true);
+}
+
+/**
+ * 정리 한 번. 같은 시점에 두 번 돌지 않게 단일 실행으로 묶는다(dry run은 예외 — 조회용).
+ * 실패해도 잡 흐름을 막지 않는다.
+ */
+export async function runWorktreeGc(opts: GcOptions = {}, port = 3000): Promise<GcResult> {
+  await ensureLoaded();
+  const start = async (): Promise<GcResult> => {
+    const projects = await loadProjects().catch((e) => {
+      console.warn(`[gc] 프로젝트 설정을 읽지 못했습니다: ${e instanceof Error ? e.message : e}`);
+      return {} as Record<string, ProjectConfig>;
+    });
+    const result = await collectGarbage(
+      {
+        jobs: [...jobs.values()],
+        projects,
+        worktreeRoot: WORKTREE_ROOT,
+        keepAll: KEEP_WORKTREE,
+        onWorktreeRemoved: markWorktreeRemoved,
+      },
+      opts
+    );
+    if (!opts.dryRun) {
+      const removed = result.worktrees.filter((w) => w.action === "removed").length;
+      if (removed > 0 || result.removedLocalBranches.length > 0 || result.removedRemoteBranches.length > 0) {
+        console.log(`[gc] ${summarizeGc(result)}`);
+        void notifyWorktreeGc(result, port);
+      }
+      for (const e of result.errors) console.warn(`[gc] ${e}`);
+    }
+    return result;
+  };
+
+  if (opts.dryRun) return start();
+  const running = g.__gcRunning;
+  if (running) return running;
+  const p = start().finally(() => {
+    if (g.__gcRunning === p) g.__gcRunning = undefined;
+  });
+  g.__gcRunning = p;
+  g.__lastGc = await p;
+  return p;
+}
+
+/** 마지막 정리 결과 (서버가 사는 동안만) */
+export function lastWorktreeGc(): GcResult | undefined {
+  return g.__lastGc;
+}
+
+function gcSoon(port: number, delayMs = 5_000) {
+  const t = setTimeout(() => {
+    void runWorktreeGc({}, port).catch((e) => console.warn(`[gc] 실패: ${e instanceof Error ? e.message : e}`));
+  }, delayMs);
+  t.unref?.();
+}
+
+function startGc() {
+  if (g.__jobGc) return;
+  g.__jobGc = setInterval(() => {
+    void runWorktreeGc().catch((e) => console.warn(`[gc] 실패: ${e instanceof Error ? e.message : e}`));
+  }, GC_INTERVAL_MS);
+  g.__jobGc.unref?.();
+  // 서버가 오래 꺼져 있는 동안 기한이 지난 것들이 있다 — 기동 직후에도 한 번 돈다
+  gcSoon(3000, 30_000);
 }

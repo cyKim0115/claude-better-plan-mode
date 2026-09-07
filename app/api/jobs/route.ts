@@ -20,6 +20,7 @@ function summarize(j: Job) {
     endedAt: j.endedAt,
     lastActivityAt: j.lastActivityAt,
     branch: j.branch,
+    worktreeRemovedAt: j.worktreeRemovedAt,
     prUrl: j.prUrl,
     commitCount: j.commitCount,
     error: j.error,

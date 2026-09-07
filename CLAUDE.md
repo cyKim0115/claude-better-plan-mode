@@ -14,12 +14,15 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 | `lib/runner.ts` | 프로젝트 미지정 플랜의 착수 — `claude -p` 스폰, 인메모리 런 레지스트리 |
 | `lib/stream-json.ts` | stream-json → 로그 항목 공용 변환기 (runner는 마커 처리 때문에 자체 포맷터 유지) |
 | `lib/jobs.ts` | 원격 워커 잡 + 플랜 착수 — `data/jobs/*.json` 저장, 프로젝트별 직렬 큐, worktree → claude -p → 커밋 → 검증 → push/PR |
+| `lib/proc.ts` | 외부 프로세스 실행 공용 유틸 — 프로세스 그룹 종료 + 워치독(상한·무출력 정지). jobs·worktree-gc 공용 |
+| `lib/worktree-gc.ts` | 워커 잔여물 GC — 보관 기한 지난 worktree·로컬/원격 `agent/*` 브랜치 정리 정책 |
 | `lib/notify.ts` | Slack(Block Kit)·Discord 웹훅 알림 — 공급자 중립 `Notice` → `toSlack`/`toDiscord` (미설정 시 no-op) |
 | `lib/screenshot.ts` | 워커 PC 화면 캡처 |
 | `lib/tunnel.ts` | ngrok 공개 URL |
 | `app/api/**` | REST 엔드포인트 (`jobs`, `screenshots` 포함) |
 | `components/PlanBoard.tsx` | 보드 UI |
 | `components/JobList.tsx`, `JobView.tsx` | 워커 잡 목록·상세 UI |
+| `components/WorktreePanel.tsx` | 남은 worktree 현황·즉시 정리 UI (`/api/worktrees`) |
 | `mcp/server.mjs` | MCP 서버(stdio) — 온디맨드 보드 서버 스폰, `plan_create` 등 툴 |
 | `mcp/worker.mjs` | 원격 워커 MCP 서버(Streamable HTTP, Bearer 토큰) — 보드 `/api/jobs` 프록시 |
 | `mcp/worker-client.mjs` | 메인 PC용 stdio 브리지 — Claude Desktop처럼 HTTP 헤더를 못 붙이는 호스트가 worker.mjs에 붙는 경로 |
@@ -34,7 +37,9 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 
 **플랜 착수**: 플랜에 `project`(projects.json 키)가 있으면 착수는 잡 파이프라인을 탄다(`submitJob({ planId, taskIds })`) — 실행 지시문은 worktree·브랜치가 정해진 뒤 `buildPlanJobPrompt`가 조립하고, 진행 마커는 `lib/plan-run.ts`가 플랜에 반영한다. `project`가 없는 레거시 플랜만 `lib/runner.ts`로 간다. 두 경로 모두 지시문·마커 로직을 각자 복제하지 말고 `lib/plan-run.ts`를 쓴다. PR/직푸시 선택은 계획표 액션바(착수 시점)에 있다 — 플랜 생성 시점으로 옮기지 않는다.
 
-**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `exec`/`runClaude`의 워치독(상한 + 무출력 정지)을 거친다 — 워치독 없는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용). 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
+**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `lib/proc.ts`의 `spawnWatched`(상한 + 무출력 정지 워치독, 프로세스 그룹 종료)를 거친다 — 여기를 우회하는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용). 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
+
+**잔여물 정리**: 잡이 일부러 남긴 worktree·브랜치는 `lib/worktree-gc.ts`가 보관 기한이 지나면 반드시 치운다 (기동 직후·잡 종료 후·`WORKER_GC_INTERVAL_MIN` 주기). 실행 중·대기 중 잡의 worktree, 그리고 커밋·push 안 된 변경이 남은 worktree의 짧은 기한 삭제는 금지다 — 이 두 안전장치를 빼지 않는다. worktree를 지웠으면 잡의 `worktreeRemovedAt`을 남겨 `job_resume`이 헛돌지 않게 한다. 원격 브랜치는 PR이 머지·클로즈됐거나 base에 반영된 `agent/*`만 지운다.
 
 **TypeScript**: `any` 금지 (`unknown` + 좁히기). 외부 경계(Agent 응답, MCP 인자, 요청 본문)는 파싱 후 검증한다 — `lib/agent.ts`의 `extractJson` + Raw* 인터페이스 패턴을 따른다. 서버 전용 모듈(`lib/store.ts`, `lib/runner.ts`)을 클라이언트 컴포넌트에서 import하지 않는다.
 

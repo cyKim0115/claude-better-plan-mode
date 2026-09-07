@@ -77,7 +77,7 @@ export default function JobView({ jobId }: { jobId: string }) {
   if (!meta) return <p className="muted">불러오는 중…</p>;
 
   const active = meta.status === "queued" || meta.status === "running";
-  const resumable = !active && Boolean(meta.worktree) && meta.status !== "succeeded";
+  const resumable = !active && Boolean(meta.worktree) && !meta.worktreeRemovedAt && meta.status !== "succeeded";
 
   return (
     <div>
@@ -118,7 +118,12 @@ export default function JobView({ jobId }: { jobId: string }) {
             <div>PR: <a href={meta.prUrl} target="_blank" rel="noreferrer">{meta.prUrl}</a></div>
           )}
           {meta.commitCount !== undefined && <div className="small muted">커밋 {meta.commitCount}개</div>}
-          {meta.worktree && <div className="small muted">worktree: {meta.worktree}</div>}
+          {meta.worktree && (
+            <div className="small muted">
+              worktree: {meta.worktree}
+              {meta.worktreeRemovedAt ? " (정리됨)" : ""}
+            </div>
+          )}
           {meta.error && <div style={{ color: "var(--red)", marginTop: 6 }}>{meta.error}</div>}
         </div>
       )}

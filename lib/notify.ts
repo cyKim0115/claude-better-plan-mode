@@ -5,6 +5,7 @@
 //   Slack 포맷 규칙은 .claude/skills/project-workflows/slack-webhook-message/SKILL.md 참고.
 
 import { getTunnelUrl } from "./tunnel";
+import { formatKb, summarizeGc, type GcResult } from "./worktree-gc";
 import type { Job, Plan, Run } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -369,4 +370,51 @@ function duration(startedAt: string, endedAt?: string): string {
   if (!endedAt) return "-";
   const s = Math.max(0, Math.round((+new Date(endedAt) - +new Date(startedAt)) / 1000));
   return s < 60 ? `${s}초` : `${Math.floor(s / 60)}분 ${s % 60}초`;
+}
+
+// ---------------------------------------------------------------------------
+// 워크트리 정리 알림
+// ---------------------------------------------------------------------------
+
+/** worktree·브랜치 GC 결과 알림. 지운 게 있을 때만 호출한다. fire-and-forget. */
+export async function notifyWorktreeGc(result: GcResult, port: number): Promise<void> {
+  try {
+    const links = await boardLinks("/jobs", port);
+    const removed = result.worktrees.filter((w) => w.action === "removed");
+    const failed = result.worktrees.filter((w) => w.action === "failed");
+    const kept = result.worktrees.filter((w) => w.action === "kept");
+
+    const lines = removed
+      .slice(0, 10)
+      .map((w) => `• ${w.path.split("/").pop()}${w.sizeKb ? ` (${formatKb(w.sizeKb)})` : ""} — ${w.reason}`);
+    if (removed.length > 10) lines.push(`… 외 ${removed.length - 10}개`);
+
+    const fields: NoticeField[] = [
+      { name: "정리한 worktree", value: `${removed.length}개`, inline: true },
+      { name: "확보 용량", value: result.freedKb > 0 ? formatKb(result.freedKb) : "-", inline: true },
+      { name: "남긴 worktree", value: `${kept.length}개`, inline: true },
+    ];
+    if (result.removedLocalBranches.length > 0) {
+      fields.push({ name: "삭제한 로컬 브랜치", value: clip(result.removedLocalBranches.join("\n"), 900) });
+    }
+    if (result.removedRemoteBranches.length > 0) {
+      fields.push({ name: "삭제한 원격 브랜치", value: clip(result.removedRemoteBranches.join("\n"), 900) });
+    }
+    if (failed.length > 0) fields.push({ name: "삭제 실패", value: clip(failed.map((w) => w.path).join("\n"), 900) });
+    if (result.errors.length > 0) fields.push({ name: "오류", value: clip(result.errors.join("\n"), 900) });
+
+    await sendNotice({
+      tone: result.errors.length > 0 || failed.length > 0 ? "warning" : "info",
+      headline: `워크트리 정리: ${summarizeGc(result)}`,
+      title: "워커 잔여물 정리",
+      url: links.primary,
+      description: lines.join("\n") || "정리 대상 없음",
+      fields,
+      links: links.links,
+      footer: `보관 기한 ${result.ttlHours}시간 (저장 안 된 변경은 ${result.unsavedTtlHours}시간) · ${links.footer}`,
+      timestamp: result.at,
+    });
+  } catch (e) {
+    console.warn(`[notify] 워크트리 정리 알림 오류: ${e instanceof Error ? e.message : e}`);
+  }
 }

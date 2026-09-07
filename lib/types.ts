@@ -132,6 +132,8 @@ export interface Job {
   branch?: string;
   /** worktree 절대경로 */
   worktree?: string;
+  /** worktree가 정리된 시각 (성공 후 정리 또는 GC). 있으면 job_resume 불가 */
+  worktreeRemovedAt?: string;
   prUrl?: string;
   /** 이번 잡이 base 대비 만든 커밋 수 */
   commitCount?: number;

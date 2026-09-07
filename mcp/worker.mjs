@@ -4,7 +4,7 @@
  *
  * 이 PC를 "서브 PC"로 쓰기 위한 진입점. 다른 PC의 Claude Code가 HTTP MCP로 붙어
  * 잡을 제출하고(job_submit), 진행을 확인하고(job_status / job_logs), 화면을 보고(worker_screenshot),
- * 취소(job_cancel)한다. 실제 실행은 보드 서버(next)의 /api/jobs가 맡는다 — 이 프로세스는 얇은 프록시다.
+ * 취소(job_cancel)하고, 남은 worktree를 정리(worker_cleanup)한다. 실제 실행은 보드 서버(next)의 /api/jobs가 맡는다 — 이 프로세스는 얇은 프록시다.
  *
  * 메인 PC 등록 예:
  *   claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp \
@@ -290,6 +290,44 @@ function createServer(req) {
     async ({ jobId }) => {
       const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
       return text(`취소 요청 완료: ${data.id} → ${data.status} (단계: ${data.stage})`);
+    }
+  );
+
+  server.registerTool(
+    "worker_cleanup",
+    {
+      description:
+        "워커 PC에 남은 worktree·브랜치 잔여물을 정리한다. 평소에는 서버가 보관 기한(기본 48시간, 저장 안 된 변경이 남았으면 168시간)에 " +
+        "맞춰 자동으로 치우므로 보통 부를 필요가 없다. 용량이 급하거나 현황을 알고 싶을 때만 쓴다. " +
+        "dryRun=true면 지우지 않고 목록만 보여 준다. force=true는 보관 기한을 무시한다(실행 중인 잡과 저장 안 된 변경은 그래도 남긴다).",
+      inputSchema: {
+        dryRun: z.boolean().optional().describe("true면 대상만 조회하고 지우지 않는다"),
+        force: z.boolean().optional().describe("보관 기한 무시"),
+        includeUnsaved: z.boolean().optional().describe("force와 함께 쓰면 커밋·push 안 된 변경이 남은 worktree까지 삭제"),
+      },
+    },
+    async ({ dryRun = false, force = false, includeUnsaved = false }) => {
+      const r = dryRun
+        ? (await api("/api/worktrees?size=1", { timeoutMs: 180_000 })).scan
+        : await api("/api/worktrees", {
+            method: "POST",
+            body: JSON.stringify({ force, includeUnsaved, measure: true }),
+            timeoutMs: 300_000,
+          });
+      const size = (kb) => (!kb ? "-" : kb >= 1048576 ? `${(kb / 1048576).toFixed(1)}GB` : kb >= 1024 ? `${Math.round(kb / 1024)}MB` : `${kb}KB`);
+      const removed = r.worktrees.filter((w) => w.action === "removed");
+      const kept = r.worktrees.filter((w) => w.action === "kept");
+      const lines = [
+        `${dryRun ? "정리 예정" : "정리함"}: worktree ${removed.length}개${r.freedKb ? ` (${size(r.freedKb)})` : ""}`,
+        ...removed.map((w) => `  - ${w.path}${w.sizeKb ? ` ${size(w.sizeKb)}` : ""} — ${w.reason}`),
+        `남김: ${kept.length}개`,
+        ...kept.map((w) => `  - ${w.path} — ${w.reason}`),
+      ];
+      if (r.removedLocalBranches?.length) lines.push(`로컬 브랜치 삭제: ${r.removedLocalBranches.join(", ")}`);
+      if (r.removedRemoteBranches?.length) lines.push(`원격 브랜치 삭제: ${r.removedRemoteBranches.join(", ")}`);
+      if (r.errors?.length) lines.push(`오류: ${r.errors.join(" / ")}`);
+      lines.push(`보관 기한 ${r.ttlHours}시간 · 저장 안 된 변경 ${r.unsavedTtlHours}시간 · 루트 ${r.worktreeRoot}`);
+      return text(lines.join("\n"));
     }
   );
 

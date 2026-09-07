@@ -4,7 +4,7 @@ description: >-
   서브 PC(mac-worker MCP)에 코드 작업을 위임하고 결과를 받는 방법. 사용자가 "mac-worker로", "서브 PC에서",
   "맥에서 돌려", "원격으로 시켜", "워커에 맡겨", "TeenipingTycoon 작업 시켜", 잡 상태·로그·취소·재개·화면 확인,
   PR/직푸시·모델·추론 레벨 선택을 요청할 때 사용. worker_projects / job_submit / job_status / job_logs /
-  job_list / job_cancel / job_resume / worker_screenshot 툴이 보이면 이 스킬을 따른다.
+  job_list / job_cancel / job_resume / worker_screenshot / worker_cleanup 툴이 보이면 이 스킬을 따른다.
 ---
 
 # Remote Worker
@@ -75,6 +75,18 @@ prompt: LobbyPopup 프리팹 우상단에 닫기 버튼을 추가하고 OnClickC
 - "다시 시켜"(내용을 바꿔서) → 취소 후 새 `job_submit`. "마저 끝내"(내용은 그대로) → `job_resume`.
 - 같은 프로젝트 잡은 순서대로 실행된다. 여러 개를 연달아 제출해도 되지만, 서로 의존하는 작업이면
   앞 잡이 끝난 뒤 제출하라고 권한다 (앞 잡의 PR이 머지되기 전엔 뒤 잡이 그 변경을 못 본다).
+
+## 잔여물 정리
+
+worktree·브랜치는 워커가 보관 기한(기본 48시간, 저장 안 된 변경이 남았으면 168시간)에 맞춰 알아서 치운다.
+평소에 `worker_cleanup`을 부르지 않는다. 부르는 경우는 둘뿐이다.
+
+- 사용자가 "디스크 꽉 찼어", "워크트리 정리해", "뭐가 남아 있어?"라고 물을 때 → `worker_cleanup({ dryRun: true })`로
+  현황(경로·용량·남긴 이유)을 먼저 보여 주고, 지울지 물은 뒤 `worker_cleanup({ force: true })`.
+- `job_resume`이 "worktree가 이미 정리됐습니다"로 실패할 때 → 이어서 마무리는 불가능하다. 새 `job_submit`으로 다시 시킨다.
+
+커밋·push 안 된 변경이 남은 worktree는 `force`로도 남는다. 그것까지 지우려면 `includeUnsaved: true`가 필요한데,
+**사용자가 잃어도 된다고 확인했을 때만** 쓴다.
 
 ## 연결이 안 될 때
 

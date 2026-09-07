@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { JobEffort, JobMode, JobStatus, JobVerifyResult } from "@/lib/types";
 import { MODEL_PRESETS } from "./options";
+import WorktreePanel from "./WorktreePanel";
 
 interface JobSummary {
   id: string;
@@ -170,6 +171,8 @@ export default function JobList() {
         </div>
         {error && <div className="error-box">{error}</div>}
       </div>
+
+      <WorktreePanel />
 
       <h2>잡 목록</h2>
       {jobs.length === 0 && <p className="muted">아직 잡이 없습니다.</p>}
