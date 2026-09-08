@@ -4,6 +4,7 @@
 **세팅은 Mac 앞에서 한 번**, 이후 **사용은 Windows에서만** 합니다.
 
 기술 상세(툴 목록·잡 단계·설정 필드)는 [`docs/site/integration/worker.md`](site/integration/worker.md)에 있습니다. 이 문서는 "내가 실제로 뭘 눌러야 하는가"만 다룹니다.
+설계가 왜 이렇게 됐는지, 어떤 사건에서 나온 결정인지는 [`docs/handoff.md`](handoff.md)에 있습니다.
 
 ```
 [Windows] Claude Code ──MCP(HTTP:4000)──▶ [Mac] worker ──▶ worktree → claude -p → 커밋 → push/PR
