@@ -275,6 +275,7 @@ cd ~/repo/claude-better-plan-mode && npm run worker
 | Claude가 mac-worker를 모른다 | `claude mcp list`에 없음 → 1-7 다시. 있는데 못 쓰면 세션 재시작. 툴은 보이는데 엉뚱하게 쓰면 1-8 스킬 미설치 |
 | Windows에서 401 / `worker_unreachable`만 보임 | 토큰 불일치. `claude mcp remove mac-worker` 후 다시 add (Desktop은 config의 `WORKER_TOKEN` 수정 후 완전 재시작) |
 | Windows에서 연결 거부 | Tailscale 양쪽 켜졌는지, `WORKER_BIND`가 `0.0.0.0`인지, 브라우저에서 보드가 열리는지 |
+| 보드가 `Application error` · 콘솔에 `ChunkLoadError` / 400 | 보드가 떠 있는 동안 `npm run build`를 돌려 청크 이름이 어긋난 상태 → `launchctl kickstart -k gui/$UID/com.cykim.better-plan-worker`로 재시작 |
 | `worker_screenshot` 실패 | 화면 기록 권한 / GUI 세션 없음(SSH로 띄웠을 때). launchd로 다시 |
 | PR 생성 실패, 브랜치는 push됨 | `gh auth login`. 브랜치는 이미 올라가 있으니 GitHub에서 수동 PR |
 | direct rebase 실패 | 충돌. worktree가 남아 있으니 Parsec으로 들어가 해결 후 `job_resume` |

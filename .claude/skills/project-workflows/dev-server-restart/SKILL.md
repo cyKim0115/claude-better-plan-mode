@@ -52,6 +52,18 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
 
 `200`이면 성공. 실패하면 백그라운드 출력에서 컴파일 에러를 읽어 사용자에게 전달한다.
 
+## macOS 상시 보드 (launchd)
+
+Mac mini에서는 워커 LaunchAgent가 `next start`로 보드(3000)를 상시 띄운다. **`npm run build`만 하고 끝내지 않는다** — 실행 중인 서버는 옛 빌드의 청크 이름이 박힌 HTML을 계속 내보내서, 바뀐 페이지가 브라우저에서 `ChunkLoadError`(청크 400)로 죽는다. 빌드했으면 반드시 재시작한다.
+
+```bash
+npm run build
+launchctl kickstart -k gui/$UID/com.cykim.better-plan-worker
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/jobs
+```
+
+재시작은 워커 MCP도 함께 내린다 — 먼저 `curl -s http://127.0.0.1:3000/api/jobs`로 실행 중인 잡이 없는지 확인한다.
+
 ## 화면 확인
 
 UI 변경을 눈으로 확인해야 하면 `mcp__Claude_Browser__preview_start`로 `http://localhost:3000`을 연다. 스크린샷보다 `read_page`(접근성 트리)가 텍스트·구조 검증에 싸다.
