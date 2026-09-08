@@ -208,6 +208,10 @@ async function checkedOutBranches(repo: string): Promise<Set<string>> {
 // 본체
 // ---------------------------------------------------------------------------
 
+function isActiveJob(job: Job): boolean {
+  return job.status === "running" || job.status === "queued";
+}
+
 interface Candidate {
   dir: string;
   job?: Job;
@@ -217,9 +221,15 @@ interface Candidate {
 
 /** WORKTREE_ROOT 바로 아래 디렉터리 + 잡이 기억하는 worktree 경로의 합집합 */
 async function collectCandidates(ctx: GcContext, errors: string[]): Promise<Candidate[]> {
+  // 이어서하기(새 잡 카드)로 한 worktree를 여러 잡이 공유할 수 있다.
+  // 그중 실행 중·대기 중인 잡을 대표로 기억해야 아래 보호 규칙이 걸린다.
   const byPath = new Map<string, Job>();
   for (const job of ctx.jobs) {
-    if (job.worktree) byPath.set(path.resolve(job.worktree), job);
+    if (!job.worktree) continue;
+    const key = path.resolve(job.worktree);
+    const prev = byPath.get(key);
+    if (prev && isActiveJob(prev) && !isActiveJob(job)) continue;
+    byPath.set(key, job);
   }
 
   const found = new Map<string, Candidate>();
@@ -271,7 +281,7 @@ export async function collectGarbage(ctx: GcContext, opts: GcOptions = {}): Prom
   // 이미 사라진 worktree를 기억하고 있는 잡은 기록만 맞춰 준다 (보드의 "이어서 마무리" 오해 방지)
   for (const job of ctx.jobs) {
     if (!job.worktree || job.worktreeRemovedAt) continue;
-    if (job.status === "running" || job.status === "queued") continue;
+    if (isActiveJob(job)) continue;
     if (!alive.has(path.resolve(job.worktree))) ctx.onWorktreeRemoved?.(job, "디스크에 없음");
   }
 
@@ -298,7 +308,7 @@ export async function collectGarbage(ctx: GcContext, opts: GcOptions = {}): Prom
     };
     result.worktrees.push(entry);
 
-    if (job && (job.status === "running" || job.status === "queued")) {
+    if (job && isActiveJob(job)) {
       entry.reason = `잡이 ${job.status} 상태`;
       if (opts.measure) entry.sizeKb = await duKb(c.dir);
       continue;

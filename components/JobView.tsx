@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Job, RunLogLine } from "@/lib/types";
 import { ago, statusBadge } from "./JobList";
 
 type JobMeta = Omit<Job, "log"> & { logLength: number; log: RunLogLine[] };
 
 export default function JobView({ jobId }: { jobId: string }) {
+  const router = useRouter();
   const [meta, setMeta] = useState<Omit<JobMeta, "log"> | null>(null);
   const [log, setLog] = useState<RunLogLine[]>([]);
   const [missing, setMissing] = useState(false);
@@ -77,7 +79,11 @@ export default function JobView({ jobId }: { jobId: string }) {
   if (!meta) return <p className="muted">불러오는 중…</p>;
 
   const active = meta.status === "queued" || meta.status === "running";
-  const resumable = !active && Boolean(meta.worktree) && !meta.worktreeRemovedAt && meta.status !== "succeeded";
+  const worktreeAlive = Boolean(meta.worktree) && !meta.worktreeRemovedAt;
+  // 커밋 단계부터 다시 도는 재개 (claude는 다시 돌지 않는다)
+  const resumable = !active && worktreeAlive && meta.status !== "succeeded";
+  // 세션을 이어 추가 지시 (claude --resume) — 성공한 잡도 worktree만 남아 있으면 가능
+  const continuable = !active && worktreeAlive;
 
   return (
     <div>
@@ -92,6 +98,10 @@ export default function JobView({ jobId }: { jobId: string }) {
             {meta.model && <span>· 모델 {meta.model}</span>}
             {meta.effort && <span>· effort {meta.effort}</span>}
             {meta.verify && <span>· 검증 {meta.verify}</span>}
+            {meta.followUpCount ? <span>· 이어서 {meta.followUpCount}회</span> : null}
+            {meta.parentJobId && (
+              <a href={`/jobs/${meta.parentJobId}`}>· 이전 잡 {meta.parentJobId.slice(0, 8)}</a>
+            )}
             <span>· job {meta.id.slice(0, 8)}</span>
           </div>
         </div>
@@ -102,9 +112,34 @@ export default function JobView({ jobId }: { jobId: string }) {
             {meta.status} · {meta.stage}
           </span>
           {active && <button className="danger tiny" onClick={cancel}>취소</button>}
+          {!active && (
+            <>
+              <button
+                className="tiny"
+                onClick={() => router.push(`/jobs/${jobId}/continue`)}
+                disabled={!continuable}
+                title={
+                  continuable
+                    ? "이전 세션을 그대로 이어 추가 지시 (claude --resume)"
+                    : "worktree가 남아 있지 않아 이어서할 수 없습니다 — 새 세션으로 시작하세요"
+                }
+              >
+                이어서하기
+              </button>
+              <button
+                className="tiny"
+                onClick={() => router.push(`/jobs/${jobId}/new-session`)}
+                title="이 잡의 지시·요약을 컨텍스트로 참조하는 새 세션"
+              >
+                새 세션
+              </button>
+            </>
+          )}
           {resumable && (
             <>
-              <button className="tiny" onClick={() => resume(false)}>이어서 마무리</button>
+              <button className="tiny" onClick={() => resume(false)} title="claude 없이 커밋 → push/PR만 마무리">
+                커밋부터 마무리
+              </button>
               <button className="tiny" onClick={() => resume(true)} title="Unity 검증 없이 push/PR까지">검증 없이 마무리</button>
             </>
           )}

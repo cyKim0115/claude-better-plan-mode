@@ -132,6 +132,8 @@ export interface Job {
   branch?: string;
   /** worktree 절대경로 */
   worktree?: string;
+  /** worktree를 만들 때 쓴 시작 브랜치 (기본 baseBranch). 이전 잡 브랜치 위에서 시작한 새 세션이면 그 브랜치 */
+  startBranch?: string;
   /** worktree가 정리된 시각 (성공 후 정리 또는 GC). 있으면 job_resume 불가 */
   worktreeRemovedAt?: string;
   prUrl?: string;
@@ -151,8 +153,14 @@ export interface Job {
   verify?: JobVerifyResult;
   /** 마지막으로 로그가 붙은 시각 — 워치독·보드의 "멈춤" 판정 기준 */
   lastActivityAt?: string;
-  /** job_resume으로 이어 돌린 횟수 */
+  /** job_resume으로 이어 돌린 횟수 (커밋 단계부터 재개 — claude 세션은 다시 돌지 않는다) */
   resumeCount?: number;
+  /** 마지막 claude 세션 id (stream-json에서 캡처) — "이어서하기"의 claude --resume 기준 */
+  sessionId?: string;
+  /** 같은 세션에 추가 지시를 넣어 이어 돌린 횟수 */
+  followUpCount?: number;
+  /** 세션·컨텍스트를 물려받은 이전 잡 id (이어서하기의 새 잡 분리, 또는 새 세션) */
+  parentJobId?: string;
   log: RunLogLine[];
 }
 

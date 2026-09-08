@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import type { JobEffort, JobMode, JobStatus, JobVerifyResult } from "@/lib/types";
 import { MODEL_PRESETS } from "./options";
 import WorktreePanel from "./WorktreePanel";
+import ProjectDirectToggle from "./ProjectDirectToggle";
 
 interface JobSummary {
   id: string;
@@ -23,6 +24,8 @@ interface JobSummary {
   prUrl?: string;
   error?: string;
   resumeCount?: number;
+  followUpCount?: number;
+  parentJobId?: string;
 }
 
 interface ProjectSummary {
@@ -164,8 +167,20 @@ export default function JobList() {
             {submitting ? <><span className="spinner" /> 제출 중…</> : "잡 제출"}
           </button>
           {current && (
-            <span className="small muted">
-              base {current.baseBranch} · Unity 검증 {current.unityVerify ? "켜짐" : "없음"}
+            <span className="row">
+              <span className="small muted">
+                base {current.baseBranch} · Unity 검증 {current.unityVerify ? "켜짐" : "없음"}
+              </span>
+              <ProjectDirectToggle
+                project={current.key}
+                baseBranch={current.baseBranch}
+                allowDirect={current.allowDirect}
+                disabled={submitting}
+                onChanged={(next) => {
+                  setProjects((ps) => ps.map((p) => (p.key === current.key ? { ...p, allowDirect: next } : p)));
+                  if (!next) setMode("pr"); // 잠그면 직푸시 선택을 남겨 두지 않는다
+                }}
+              />
             </span>
           )}
         </div>
@@ -190,6 +205,8 @@ export default function JobList() {
                 {j.model ? ` · ${j.model}` : ""}{j.effort ? ` · ${j.effort}` : ""}
                 {j.verify && j.verify !== "skipped" ? ` · 검증 ${j.verify}` : ""}
                 {j.resumeCount ? ` · 재개 ${j.resumeCount}회` : ""}
+                {j.followUpCount ? ` · 이어서 ${j.followUpCount}회` : ""}
+                {j.parentJobId ? " · 이어받음" : ""}
               </span>
             </div>
             <div className="row small muted">

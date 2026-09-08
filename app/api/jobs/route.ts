@@ -25,6 +25,9 @@ function summarize(j: Job) {
     commitCount: j.commitCount,
     error: j.error,
     resumeCount: j.resumeCount,
+    followUpCount: j.followUpCount,
+    parentJobId: j.parentJobId,
+    startBranch: j.startBranch,
   };
 }
 
@@ -63,6 +66,9 @@ export async function POST(req: NextRequest) {
   if (body.effort !== undefined && !(JOB_EFFORTS as readonly unknown[]).includes(body.effort)) {
     return NextResponse.json({ error: `effort는 ${JOB_EFFORTS.join(" | ")}` }, { status: 400 });
   }
+  if (body.startFrom !== undefined && body.startFrom !== "base" && body.startFrom !== "parent") {
+    return NextResponse.json({ error: "startFrom은 base 또는 parent" }, { status: 400 });
+  }
   try {
     const job = await submitJob({
       project: body.project,
@@ -73,6 +79,8 @@ export async function POST(req: NextRequest) {
       model: typeof body.model === "string" && body.model ? body.model : undefined,
       effort: body.effort as JobEffort | undefined,
       maxTurns: typeof body.maxTurns === "number" ? body.maxTurns : undefined,
+      parentJobId: typeof body.parentJobId === "string" && body.parentJobId ? body.parentJobId : undefined,
+      startFrom: body.startFrom as "base" | "parent" | undefined,
       port: Number(req.nextUrl.port) || 3000,
     });
     return NextResponse.json({ id: job.id, status: job.status, branch: job.branch }, { status: 201 });

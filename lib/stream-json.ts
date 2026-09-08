@@ -9,16 +9,20 @@ export interface StreamEvent {
   text: string;
   /** result 이벤트의 성공 여부 (result가 아니면 undefined) */
   resultOk?: boolean;
+  /** 이벤트에 실려 온 claude 세션 id — 잡의 "이어서하기"(claude --resume)가 이 값을 쓴다 */
+  sessionId?: string;
 }
 
 /** 파싱된 stream-json 객체를 로그 항목 목록으로 변환. 모르는 이벤트는 빈 배열. */
 export function streamEventToLog(obj: Record<string, unknown>): StreamEvent[] {
   const type = obj.type as string;
+  const sessionId = typeof obj.session_id === "string" && obj.session_id ? obj.session_id : undefined;
 
   if (type === "system") {
     if ((obj.subtype as string) === "init") {
       const model = (obj as { model?: string }).model ?? "?";
-      return [{ kind: "system", text: `세션 시작 (model: ${model})` }];
+      const where = sessionId ? `, session: ${sessionId.slice(0, 8)}` : "";
+      return [{ kind: "system", text: `세션 시작 (model: ${model}${where})`, sessionId }];
     }
     return [];
   }
@@ -48,7 +52,7 @@ export function streamEventToLog(obj: Record<string, unknown>): StreamEvent[] {
     const subtype = obj.subtype as string;
     const resultText = (obj as { result?: string }).result;
     const ok = subtype === "success";
-    return [{ kind: "result", text: ok ? resultText?.trim() || "완료" : `실패: ${subtype}`, resultOk: ok }];
+    return [{ kind: "result", text: ok ? resultText?.trim() || "완료" : `실패: ${subtype}`, resultOk: ok, sessionId }];
   }
 
   return [];

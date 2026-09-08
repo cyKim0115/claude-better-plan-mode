@@ -172,6 +172,31 @@ function isEffort(v: unknown): v is JobEffort {
   return typeof v === "string" && (JOB_EFFORTS as readonly string[]).includes(v);
 }
 
+/**
+ * 보드에서 프로젝트의 직푸시 허용 여부를 바꾼다.
+ * projects.json에서 **`allowDirect`만** 건드린다 — 경로 등 나머지 필드는 파일에 있는 값을 그대로 둔다.
+ * (설정 파일을 쓰는 유일한 경로다. 다른 필드를 여기서 열어 주지 않는다.)
+ */
+export async function setProjectAllowDirect(key: string, allowDirect: boolean): Promise<ProjectConfig> {
+  if (!/^[A-Za-z0-9_.-]+$/.test(key)) throw new Error(`프로젝트 키가 올바르지 않습니다: ${key}`);
+  await loadProjects(); // 파일 전체가 유효한지 먼저 확인 (깨진 설정을 덮어쓰지 않게)
+
+  const raw = JSON.parse(await fs.readFile(PROJECTS_FILE, "utf8")) as unknown;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("projects.json은 객체여야 합니다");
+  const entry = (raw as Record<string, unknown>)[key];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`알 수 없는 프로젝트: ${key}`);
+  (entry as Record<string, unknown>).allowDirect = allowDirect;
+
+  const tmp = `${PROJECTS_FILE}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, PROJECTS_FILE);
+
+  const updated = (await loadProjects())[key];
+  if (!updated) throw new Error(`설정을 다시 읽지 못했습니다: ${key}`);
+  console.log(`[jobs] ${key} 직푸시 ${allowDirect ? "허용" : "잠금"}으로 변경`);
+  return updated;
+}
+
 // ---------------------------------------------------------------------------
 // 조회
 // ---------------------------------------------------------------------------
@@ -203,6 +228,10 @@ export interface SubmitJobOptions {
   planId?: string;
   /** 플랜 착수 잡이 수행할 태스크 id 목록 */
   taskIds?: string[];
+  /** 컨텍스트로 참조할 이전 잡 id — 그 잡의 지시·요약·PR이 새 세션 지시문 앞에 붙는다 */
+  parentJobId?: string;
+  /** "parent"면 이전 잡 브랜치 위에서 worktree를 시작한다 (기본: base 브랜치) */
+  startFrom?: "base" | "parent";
   /** 완료 웹훅 링크 생성에 쓸 보드 포트 */
   port?: number;
 }
@@ -230,6 +259,22 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
     ].join("\n");
   }
 
+  // 새 세션이 이전 잡을 참조하면 컨텍스트(지시문 조립 시점)와 시작 브랜치를 물려받는다
+  let parent: Job | undefined;
+  let startBranch: string | undefined;
+  if (opts.parentJobId !== undefined) {
+    parent = (await getJob(opts.parentJobId)) ?? undefined;
+    if (!parent) throw new Error(`이전 잡을 찾을 수 없습니다: ${opts.parentJobId}`);
+    if (parent.project !== opts.project) {
+      throw new Error(`이전 잡의 프로젝트(${parent.project})와 달라 컨텍스트를 이어받을 수 없습니다`);
+    }
+  }
+  if (opts.startFrom === "parent") {
+    if (!parent) throw new Error("startFrom: parent는 parentJobId와 함께 써야 합니다");
+    if (!parent.branch) throw new Error("이전 잡에 브랜치가 없어 그 위에서 시작할 수 없습니다");
+    startBranch = parent.branch;
+  }
+
   const prompt = planSummary ?? opts.prompt.trim();
   if (!prompt) throw new Error("prompt가 비어 있습니다");
   const mode: JobMode = opts.mode === "direct" ? "direct" : "pr";
@@ -254,6 +299,8 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
     stage: "queued",
     createdAt: new Date().toISOString(),
     baseBranch: cfg.baseBranch,
+    startBranch,
+    parentJobId: parent?.id,
     skipPermissions: opts.skipPermissions === true,
     model: opts.model ?? cfg.defaultModel,
     effort: opts.effort ?? cfg.defaultEffort,
@@ -264,7 +311,7 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   pushLog(
     job,
     "info",
-    `잡 제출 (project: ${job.project}, mode: ${job.mode}, base: ${job.baseBranch}, model: ${job.model ?? "기본"}, effort: ${job.effort ?? "기본"}${job.planId ? `, plan: ${job.planId.slice(0, 8)}` : ""})`
+    `잡 제출 (project: ${job.project}, mode: ${job.mode}, base: ${job.baseBranch}, model: ${job.model ?? "기본"}, effort: ${job.effort ?? "기본"}${job.planId ? `, plan: ${job.planId.slice(0, 8)}` : ""}${parent ? `, 이전 잡: ${parent.id.slice(0, 8)}${startBranch ? ` (${startBranch} 위에서 시작)` : " (컨텍스트만 참조)"}` : ""})`
   );
   await writeJob(job);
   enqueue(job, cfg, opts.port ?? 3000, { resume: false });
@@ -326,8 +373,113 @@ export async function resumeJob(id: string, opts: ResumeJobOptions = {}): Promis
   return job;
 }
 
+export interface FollowUpJobOptions {
+  /** 세션에 얹을 추가 지시 */
+  prompt: string;
+  /** true면 새 잡 카드로 분리한다 (worktree·브랜치·PR·세션은 공유). 기본은 같은 잡에 이어붙이기 */
+  asNewJob?: boolean;
+  /** asNewJob일 때 제목 (생략 시 추가 지시 첫 줄) */
+  title?: string;
+  model?: string;
+  effort?: JobEffort;
+  maxTurns?: number;
+  /** true면 Unity 검증을 건너뛴다 */
+  skipVerify?: boolean;
+  port?: number;
+}
+
+/**
+ * 끝난 잡의 claude 세션을 그대로 이어(--resume) 추가 지시를 수행한다.
+ * worktree·브랜치·PR을 그대로 쓰므로 push는 같은 브랜치를 갱신하고 PR도 재사용된다.
+ * 커밋 단계부터만 다시 도는 resumeJob과 달리, 이 경로는 claude를 다시 돌린다.
+ */
+export async function followUpJob(id: string, opts: FollowUpJobOptions): Promise<Job> {
+  const parent = await getJob(id);
+  if (!parent) throw new Error("job not found");
+  const instruction = opts.prompt.trim();
+  if (!instruction) throw new Error("추가 지시가 비어 있습니다");
+  if (parent.status === "running" || parent.status === "queued") {
+    throw new Error(`아직 ${parent.status} 상태입니다 — 끝난 뒤에 이어서 하세요`);
+  }
+  if (!parent.worktree || !parent.branch) throw new Error("worktree 정보가 없어 이어서 할 수 없습니다 (새 세션으로 시작하세요)");
+  if (parent.worktreeRemovedAt) {
+    throw new Error(`worktree가 이미 정리됐습니다 (${parent.worktreeRemovedAt}) — 새 세션으로 시작하세요`);
+  }
+  const exists = await fs.stat(parent.worktree).then((st) => st.isDirectory()).catch(() => false);
+  if (!exists) {
+    markWorktreeRemoved(parent, "디스크에 없음");
+    throw new Error(`worktree가 없습니다: ${parent.worktree} — 새 세션으로 시작하세요`);
+  }
+  if (opts.model !== undefined && !/^[A-Za-z0-9._-]{1,80}$/.test(opts.model)) throw new Error("model 형식이 올바르지 않습니다");
+  if (opts.effort !== undefined && !isEffort(opts.effort)) throw new Error(`effort는 ${JOB_EFFORTS.join(" | ")} 중 하나`);
+  if (opts.maxTurns !== undefined && (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1 || opts.maxTurns > 1000)) {
+    throw new Error("maxTurns는 1~1000 정수");
+  }
+  const projects = await loadProjects();
+  const cfg = projects[parent.project];
+  if (!cfg) throw new Error(`프로젝트 설정이 사라졌습니다: ${parent.project}`);
+
+  const sessionNote = parent.sessionId ? `session ${parent.sessionId.slice(0, 8)}` : "이 worktree의 최근 세션";
+  const target = opts.asNewJob ? forkJobCard(parent, instruction, opts) : parent;
+  if (target === parent) {
+    parent.status = "queued";
+    parent.stage = "queued";
+    parent.error = undefined;
+    parent.endedAt = undefined;
+    parent.verify = undefined; // 코드가 다시 바뀌므로 검증도 다시 한다
+    parent.followUpCount = (parent.followUpCount ?? 0) + 1;
+    if (opts.model) parent.model = opts.model;
+    if (opts.effort) parent.effort = opts.effort;
+    if (opts.maxTurns) parent.maxTurns = opts.maxTurns;
+    pushLog(parent, "info", `이어서하기 (${parent.followUpCount}회째, ${sessionNote}): ${instruction.split("\n")[0].slice(0, 120)}`);
+  }
+  jobs.set(target.id, target);
+  await writeJob(target);
+  enqueue(target, cfg, opts.port ?? 3000, { resume: false, followUp: instruction, skipVerify: opts.skipVerify === true });
+  return target;
+}
+
+/** 이어서하기를 새 잡 카드로 분리 — worktree·브랜치·PR·세션은 이전 잡 것을 그대로 쓴다 */
+function forkJobCard(parent: Job, instruction: string, opts: FollowUpJobOptions): Job {
+  const child: Job = {
+    id: newId(),
+    project: parent.project,
+    title: (opts.title?.trim() || instruction.split("\n")[0]).slice(0, 80),
+    prompt: instruction,
+    planId: parent.planId,
+    taskIds: parent.taskIds,
+    mode: parent.mode,
+    status: "queued",
+    stage: "queued",
+    createdAt: new Date().toISOString(),
+    baseBranch: parent.baseBranch,
+    branch: parent.branch,
+    worktree: parent.worktree,
+    startBranch: parent.startBranch,
+    prUrl: parent.prUrl,
+    skipPermissions: parent.skipPermissions,
+    model: opts.model ?? parent.model,
+    effort: opts.effort ?? parent.effort,
+    maxTurns: opts.maxTurns ?? parent.maxTurns,
+    sessionId: parent.sessionId,
+    parentJobId: parent.id,
+    log: [],
+  };
+  pushLog(
+    child,
+    "info",
+    `이어서하기 — 잡 ${parent.id.slice(0, 8)}의 worktree·세션을 이어받습니다 (branch: ${child.branch}${child.sessionId ? `, session: ${child.sessionId.slice(0, 8)}` : ""})`
+  );
+  pushLog(parent, "info", `이어서하기: 새 잡 ${child.id.slice(0, 8)}이 이 worktree·세션을 이어받았습니다`);
+  scheduleSave(parent, true);
+  return child;
+}
+
 interface RunOptions {
+  /** true면 worktree·claude 단계를 건너뛰고 커밋 단계부터 (job_resume) */
   resume: boolean;
+  /** 있으면 기존 worktree에서 claude 세션을 이어 돌린다 (이어서하기의 추가 지시) */
+  followUp?: string;
   skipVerify?: boolean;
 }
 
@@ -443,19 +595,48 @@ function git(job: Job, cwd: string, args: string[], quiet = false) {
   return exec(job, "git", args, { cwd, quiet, timeoutMs: GIT_TIMEOUT_MS });
 }
 
+/**
+ * worktree 시작점(= 커밋 수를 세는 기준점)을 정한다.
+ * job.startBranch가 있으면 그 브랜치(원격 우선), 없으면 origin/<base>.
+ * strict(새 worktree를 만들 때)는 지정한 브랜치를 못 찾으면 실패시키고,
+ * 아니면(이미 만든 worktree에서 다시 셀 때) base 기준으로 물러선다.
+ */
+async function resolveStartPoint(job: Job, repo: string, base: string, strict: boolean): Promise<string> {
+  const from = job.startBranch;
+  if (from && from !== base) {
+    const fetched = await git(job, repo, ["fetch", "origin", from], true);
+    if (fetched.code === 0 && (await git(job, repo, ["rev-parse", "--verify", `origin/${from}`], true)).code === 0) {
+      pushLog(job, "info", `시작점: origin/${from}`);
+      return `origin/${from}`;
+    }
+    if ((await git(job, repo, ["rev-parse", "--verify", from], true)).code === 0) {
+      pushLog(job, "info", `시작점: 로컬 ${from}`);
+      return from;
+    }
+    if (strict) throw new Error(`시작 브랜치를 찾을 수 없습니다: ${from} (원격·로컬 모두 없음)`);
+    pushLog(job, "info", `시작 브랜치 ${from}를 찾지 못해 ${base} 기준으로 셉니다`);
+  }
+  const fetched = await git(job, repo, ["fetch", "origin", base], !strict);
+  if (fetched.code !== 0) {
+    if (strict) pushLog(job, "info", `origin fetch 실패 — 로컬 ${base}에서 분기합니다`);
+    return base;
+  }
+  return `origin/${base}`;
+}
+
 // ---------------------------------------------------------------------------
 // claude 세션
 // ---------------------------------------------------------------------------
 
-function buildJobPrompt(job: Job, worktree: string): string {
+function buildJobPrompt(job: Job, worktree: string, parent?: Job): string {
   return `너는 원격 워커 세션이다. 아래 조건에서 작업하라.
 
 - 프로젝트: ${job.project}
 - 작업 디렉터리(worktree): ${worktree}
-- 현재 브랜치: ${job.branch} (기준: ${job.baseBranch})
+- 현재 브랜치: ${job.branch} (기준: ${job.startBranch ?? job.baseBranch})
 - 결과 처리 모드: ${job.mode === "pr" ? "PR 생성" : `${job.baseBranch}에 직접 반영`}
 
-## 지시
+${parentContext(job, parent)}## 지시
 ${job.prompt}
 
 ## 마무리 규칙 (필수)
@@ -464,6 +645,51 @@ ${job.prompt}
 - **push 하지 않는다.** push·PR 생성은 워커가 처리한다.
 - 브랜치를 바꾸거나 worktree 밖의 경로를 수정하지 않는다.
 - 마지막 응답에 수행한 작업·검증 결과·남은 문제를 짧게 요약한다.`;
+}
+
+/**
+ * 이전 잡을 참조해 만든 새 세션이면 그 잡의 결과를 컨텍스트로 앞에 붙인다.
+ * 새 세션은 이전 세션의 대화를 물려받지 않으므로, 요약·브랜치·PR만 텍스트로 넘긴다.
+ */
+function parentContext(job: Job, parent?: Job): string {
+  if (!parent) return "";
+  const bullets = [
+    `- 이전 잡 결과: ${parent.status}${parent.verify ? ` · Unity 검증 ${verifyLabel(parent.verify)}` : ""}`,
+    parent.branch ? `- 이전 브랜치: ${parent.branch}` : null,
+    parent.prUrl ? `- 이전 PR: ${parent.prUrl}` : null,
+    job.startBranch && job.startBranch === parent.branch
+      ? "- 이번 worktree는 그 브랜치 위에서 시작했다 — 이전 변경이 이미 코드에 들어 있다."
+      : `- 이번 worktree는 ${job.baseBranch}에서 새로 시작했다 — 이전 변경은 이 코드에 없다.`,
+    parent.error ? `- 이전 잡 오류: ${parent.error}` : null,
+  ].filter((l): l is string => l !== null);
+
+  return `## 이전 작업 컨텍스트 (참고용)
+이 작업은 이전 잡 "${parent.title}" (job ${parent.id.slice(0, 8)})의 후속이다.
+
+${bullets.join("\n")}
+
+### 이전 지시
+${parent.prompt.trim()}
+
+### 이전 세션 요약
+${lastResult(parent)}
+
+`;
+}
+
+/** 이어서하기 — 컨텍스트를 이미 가진 세션에 추가 지시만 얹는다 (규칙은 세션이 이미 알고 있다) */
+function buildFollowUpPrompt(job: Job, instruction: string): string {
+  return `이어서 작업한다. 지금까지의 작업 내용·결정을 그대로 유지한 채 아래 추가 지시를 수행하라.
+
+## 추가 지시
+${instruction}
+
+## 마무리 규칙 (변함없음)
+- 작업이 끝나면 변경 사항을 커밋한다. 커밋 메시지는 이 프로젝트의 CLAUDE.md 커밋 규칙을 따른다.
+  git add / git commit은 승인 없이 실행할 수 있다. 커밋이 막히면 변경을 워킹트리에 남겨 두어라 — 워커가 대신 커밋한다.
+- **push 하지 않는다.** push·PR 생성은 워커가 처리한다.
+- 브랜치(${job.branch})를 바꾸거나 worktree 밖의 경로를 수정하지 않는다.
+- 마지막 응답에 이번에 한 일·검증 결과·남은 문제를 짧게 요약한다.`;
 }
 
 /** 플랜 착수 잡의 실행 지시문 — worktree·브랜치가 정해진 뒤에 조립한다 */
@@ -480,8 +706,24 @@ async function buildPlanJobPrompt(job: Job, worktree: string): Promise<string> {
   });
 }
 
-async function runClaude(job: Job, worktree: string, prompt: string, progress?: PlanProgress): Promise<boolean> {
+/** 세션 이어가기 옵션 — resume이면 job.sessionId(없으면 이 worktree의 최근 세션)를 이어받는다 */
+interface ClaudeSessionOptions {
+  resume?: boolean;
+}
+
+async function runClaude(
+  job: Job,
+  worktree: string,
+  prompt: string,
+  progress?: PlanProgress,
+  session?: ClaudeSessionOptions
+): Promise<boolean> {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  if (session?.resume) {
+    // worktree는 잡마다 고유하므로, 세션 id를 모르면 이 디렉터리의 최근 대화를 이어도 같은 세션이다
+    if (job.sessionId) args.push("--resume", job.sessionId);
+    else args.push("--continue");
+  }
   if (job.skipPermissions) {
     args.push("--dangerously-skip-permissions");
   } else {
@@ -496,6 +738,11 @@ async function runClaude(job: Job, worktree: string, prompt: string, progress?: 
   let resultOk: boolean | undefined;
   const parser = createLineParser((ev) => {
     if (ev.resultOk !== undefined) resultOk = ev.resultOk;
+    // 세션 id는 "이어서하기"(--resume)의 기준 — 바뀔 때마다 잡에 남긴다
+    if (ev.sessionId && ev.sessionId !== job.sessionId) {
+      job.sessionId = ev.sessionId;
+      scheduleSave(job);
+    }
     if (progress && (ev.kind === "assistant" || ev.kind === "result")) {
       progress.apply(ev.text);
       const clean = stripMarkers(ev.text) || (ev.kind === "result" ? "완료" : "");
@@ -625,6 +872,21 @@ async function verifyUnity(job: Job, cfg: ProjectConfig, worktree: string): Prom
   }
 }
 
+/** gh pr view --json state,url 출력 파싱 — 외부 명령 출력이므로 파싱 후 검증한다 */
+function parsePrView(stdout: string): { state: string; url: string } | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as { state?: unknown; url?: unknown };
+  const state = typeof o.state === "string" ? o.state : "";
+  const url = typeof o.url === "string" && o.url.startsWith("https://") ? o.url : "";
+  return state && url ? { state, url } : null;
+}
+
 function verifyLabel(v: Job["verify"]) {
   return v === "passed" ? "통과" : v === "failed" ? "실패" : v === "timeout" ? "시간 초과/정지" : "생략";
 }
@@ -637,7 +899,7 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
   if (isCancelled(job)) return;
   job.status = "running";
   job.startedAt = job.startedAt ?? new Date().toISOString();
-  if (!run.resume) {
+  if (!run.resume && !run.followUp) {
     job.branch = `agent/${job.id.slice(0, 8)}`;
     job.worktree = path.join(WORKTREE_ROOT, `${job.project}-${job.id.slice(0, 8)}`);
   }
@@ -656,20 +918,22 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
 
   try {
     if (!run.resume) {
-      // 1. worktree
-      setStage(job, "worktree");
-      await fs.mkdir(WORKTREE_ROOT, { recursive: true });
-      const fetched = await git(job, repo, ["fetch", "origin", base]);
-      if (fetched.code !== 0) {
-        startPoint = base;
-        pushLog(job, "info", `origin fetch 실패 — 로컬 ${base}에서 분기합니다`);
-      }
-      const wt = await git(job, repo, ["worktree", "add", "-b", branch, worktree, startPoint]);
-      if (wt.code !== 0) throw new Error(`worktree 생성 실패 (exit ${wt.code})`);
-      await seedLibrary(job, cfg, worktree);
-      if (cfg.setupCommand) {
-        const setup = await exec(job, cfg.setupCommand, [], { cwd: worktree, shell: true, timeoutMs: GIT_TIMEOUT_MS });
-        if (setup.code !== 0) throw new Error(`setupCommand 실패 (exit ${setup.code})`);
+      if (!run.followUp) {
+        // 1. worktree
+        setStage(job, "worktree");
+        await fs.mkdir(WORKTREE_ROOT, { recursive: true });
+        startPoint = await resolveStartPoint(job, repo, base, true);
+        const wt = await git(job, repo, ["worktree", "add", "-b", branch, worktree, startPoint]);
+        if (wt.code !== 0) throw new Error(`worktree 생성 실패 (exit ${wt.code})`);
+        await seedLibrary(job, cfg, worktree);
+        if (cfg.setupCommand) {
+          const setup = await exec(job, cfg.setupCommand, [], { cwd: worktree, shell: true, timeoutMs: GIT_TIMEOUT_MS });
+          if (setup.code !== 0) throw new Error(`setupCommand 실패 (exit ${setup.code})`);
+        }
+      } else {
+        // 이어서하기: worktree·브랜치는 그대로 두고 세션만 이어 돈다
+        pushLog(job, "info", `기존 worktree에서 세션을 이어 갑니다: ${worktree}`);
+        startPoint = await resolveStartPoint(job, repo, base, false);
       }
       checkCancel();
 
@@ -677,15 +941,22 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       setStage(job, "claude");
       let progress: PlanProgress | undefined;
       let prompt: string;
-      if (job.planId) {
+      if (run.followUp) {
+        // 세션이 이미 컨텍스트를 갖고 있으므로 추가 지시만 넘긴다.
+        // 플랜 착수 잡이면 마커는 계속 반영하되, 확정된 태스크 상태를 beginPlanTasks로 되돌리지 않는다.
+        prompt = buildFollowUpPrompt(job, run.followUp);
+        if (job.planId) {
+          progress = createPlanProgress(job.planId, job.taskIds ?? [], (kind, text) => pushLog(job, kind, text));
+        }
+      } else if (job.planId) {
         prompt = await buildPlanJobPrompt(job, worktree);
         const taskIds = job.taskIds ?? [];
         progress = createPlanProgress(job.planId, taskIds, (kind, text) => pushLog(job, kind, text));
         await beginPlanTasks(job.planId, taskIds);
       } else {
-        prompt = buildJobPrompt(job, worktree);
+        prompt = buildJobPrompt(job, worktree, job.parentJobId ? jobs.get(job.parentJobId) : undefined);
       }
-      const ok = await runClaude(job, worktree, prompt, progress);
+      const ok = await runClaude(job, worktree, prompt, progress, { resume: Boolean(run.followUp) });
       // 세션이 끝났으면 남은 태스크 상태를 확정한다 (이후 단계는 git 처리라 태스크 진행과 무관)
       if (progress) await progress.finalize(ok);
       checkCancel();
@@ -698,8 +969,7 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
         job.error = "claude 세션 비정상 종료 (변경은 PR로 보존됨)";
       }
     } else {
-      const fetched = await git(job, repo, ["fetch", "origin", base], true);
-      if (fetched.code !== 0) startPoint = base;
+      startPoint = await resolveStartPoint(job, repo, base, false);
     }
 
     // 3. commit (에이전트가 커밋을 안 했으면 워커가 대신)
@@ -711,7 +981,9 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       if (commit.code !== 0) throw new Error("커밋 실패");
     }
     const count = await git(job, worktree, ["rev-list", "--count", `${startPoint}..HEAD`], true);
-    job.commitCount = Number(count.stdout.trim()) || 0;
+    const counted = count.code === 0 ? Number(count.stdout.trim()) : NaN;
+    // 기준점을 못 세면(시작 브랜치가 사라진 경우 등) 변경 없음으로 단정하지 않고 push까지 진행한다
+    job.commitCount = Number.isFinite(counted) ? counted : undefined;
     scheduleSave(job, true);
     if (job.commitCount === 0) {
       pushLog(job, "info", "변경 사항 없음 — push/PR을 건너뜁니다");
@@ -743,18 +1015,22 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
         checkCancel();
       }
 
-      // 6. PR (이미 있으면 재사용)
+      // 6. PR — 열려 있는 PR이 있으면 재사용하고, 이미 머지·클로즈됐으면 새로 만든다
+      //    (이어서한 잡은 이전 PR이 머지된 뒤에 커밋이 더 붙을 수 있다)
       setStage(job, "pr");
-      if (!job.prUrl) {
-        const existing = await exec(job, "gh", ["pr", "view", branch, "--json", "url", "--jq", ".url"], {
-          cwd: worktree,
-          quiet: true,
-          timeoutMs: GIT_TIMEOUT_MS,
-        });
-        const existingUrl = existing.code === 0 ? existing.stdout.trim() : "";
-        if (existingUrl.startsWith("https://")) {
-          job.prUrl = existingUrl;
-          pushLog(job, "info", `기존 PR 재사용: ${existingUrl}`);
+      const existing = await exec(job, "gh", ["pr", "view", branch, "--json", "state,url"], {
+        cwd: worktree,
+        quiet: true,
+        timeoutMs: GIT_TIMEOUT_MS,
+      });
+      if (existing.code === 0) {
+        const found = parsePrView(existing.stdout);
+        if (found?.state === "OPEN") {
+          if (job.prUrl !== found.url) pushLog(job, "info", `기존 PR 재사용: ${found.url}`);
+          job.prUrl = found.url;
+        } else {
+          if (job.prUrl && found) pushLog(job, "info", `이전 PR이 ${found.state} 상태입니다 — 이번 변경은 새 PR로 올립니다`);
+          job.prUrl = undefined;
         }
       }
       if (!job.prUrl) {
@@ -879,6 +1155,17 @@ function markWorktreeRemoved(job: Job, note: string) {
   job.worktreeRemovedAt = new Date().toISOString();
   pushLog(job, "info", `worktree 정리됨: ${job.worktree} (${note})`);
   scheduleSave(job, true);
+
+  // 이어서하기로 같은 worktree를 공유하는 잡들도 함께 표시한다 (헛도는 재개·이어서하기 방지)
+  if (!job.worktree) return;
+  const shared = path.resolve(job.worktree);
+  for (const other of jobs.values()) {
+    if (other.id === job.id || other.worktreeRemovedAt || !other.worktree) continue;
+    if (path.resolve(other.worktree) !== shared) continue;
+    other.worktreeRemovedAt = job.worktreeRemovedAt;
+    pushLog(other, "info", `worktree 정리됨: ${other.worktree} (${note} — 잡 ${job.id.slice(0, 8)})`);
+    scheduleSave(other, true);
+  }
 }
 
 /**
