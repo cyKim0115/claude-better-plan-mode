@@ -89,7 +89,10 @@ export default function JobView({ jobId }: { jobId: string }) {
     <div>
       <div className="row spread" style={{ marginBottom: 8 }}>
         <div>
-          <a href="/jobs" className="small muted">← 잡 목록</a>
+          <div className="row" style={{ gap: 8 }}>
+            <a href="/jobs" className="small muted">← 잡 목록</a>
+            {meta.planId && <a href={`/plan/${meta.planId}`} className="small">계획표 보기 →</a>}
+          </div>
           <h1 style={{ marginTop: 4 }}>{meta.title}</h1>
           <div className="row small muted">
             <span>{meta.project}</span>
@@ -98,6 +101,10 @@ export default function JobView({ jobId }: { jobId: string }) {
             {meta.model && <span>· 모델 {meta.model}</span>}
             {meta.effort && <span>· effort {meta.effort}</span>}
             {meta.verify && <span>· 검증 {meta.verify}</span>}
+            {meta.skipVerify && !meta.verify && <span>· 검증 생략 예정</span>}
+            {meta.capture && (
+              <span>· 캡처 {meta.captures?.length ? `${meta.captures.length}개` : meta.captureError ? "실패" : "예정"}</span>
+            )}
             {meta.followUpCount ? <span>· 이어서 {meta.followUpCount}회</span> : null}
             {meta.parentJobId && (
               <a href={`/jobs/${meta.parentJobId}`}>· 이전 잡 {meta.parentJobId.slice(0, 8)}</a>
@@ -111,6 +118,15 @@ export default function JobView({ jobId }: { jobId: string }) {
             {meta.status === "running" && <span className="spinner" style={{ marginRight: 6 }} />}
             {meta.status} · {meta.stage}
           </span>
+          {meta.status === "queued" && (
+            <button
+              className="tiny"
+              onClick={() => router.push(`/jobs/${jobId}/edit`)}
+              title="아직 시작하지 않은 잡의 지시문·모드·모델·검증 옵션 수정"
+            >
+              수정
+            </button>
+          )}
           {active && <button className="danger tiny" onClick={cancel}>취소</button>}
           {!active && (
             <>
@@ -161,6 +177,35 @@ export default function JobView({ jobId }: { jobId: string }) {
           )}
           {meta.error && <div style={{ color: "var(--red)", marginTop: 6 }}>{meta.error}</div>}
         </div>
+      )}
+
+      {meta.captures && meta.captures.length > 0 && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div className="small muted" style={{ marginBottom: 8 }}>화면 캡처 {meta.captures.length}개</div>
+          <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "flex-start" }}>
+            {meta.captures.map((name) => {
+              const url = `/api/jobs/${meta.id}/captures/${encodeURIComponent(name)}`;
+              const isVideo = /\.(mp4|webm|mov)$/i.test(name);
+              return (
+                <figure key={name} style={{ margin: 0, maxWidth: 320 }}>
+                  {isVideo ? (
+                    <video src={url} controls style={{ width: "100%", borderRadius: 6 }} />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element -- 로컬 파일 서빙이라 next/image 최적화 대상이 아니다
+                    <img src={url} alt={name} style={{ width: "100%", borderRadius: 6 }} />
+                  )}
+                  <figcaption className="small muted" style={{ marginTop: 4 }}>
+                    <a href={url} target="_blank" rel="noreferrer">{name}</a>
+                  </figcaption>
+                </figure>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {meta.capture && !meta.captures?.length && meta.captureError && (
+        <div className="card small muted" style={{ marginBottom: 10 }}>화면 캡처 실패: {meta.captureError}</div>
       )}
 
       <details className="card" style={{ marginBottom: 10 }}>

@@ -147,6 +147,10 @@ function fmtJob(j, boardUrl) {
     `상태: ${j.status} (단계: ${j.stage})${j.status === "running" ? ` · 마지막 활동: ${ago(j.lastActivityAt)}` : ""}`,
   ];
   if (j.verify) lines.push(`Unity 검증: ${j.verify}`);
+  if (j.capture) {
+    const shots = j.captures?.length ? `${j.captures.length}개 (보드에서 확인)` : `없음${j.captureError ? ` — ${j.captureError}` : ""}`;
+    lines.push(`화면 캡처: ${shots}`);
+  }
   if (j.commitCount !== undefined) lines.push(`커밋: ${j.commitCount}`);
   if (j.prUrl) lines.push(`PR: ${j.prUrl}`);
   if (j.error) lines.push(`오류: ${j.error}`);
@@ -170,7 +174,7 @@ function createServer(req) {
       if (projects.length === 0) return text("등록된 프로젝트가 없습니다 (config/projects.json)");
       const lines = projects.map(
         (p) =>
-          `- ${p.key}  (base: ${p.baseBranch}, direct: ${p.allowDirect ? "허용" : "잠김"}, Unity 검증: ${p.unityVerify ? "켜짐" : "없음"}` +
+          `- ${p.key}  (base: ${p.baseBranch}, direct: ${p.allowDirect ? "허용" : "잠김"}, Unity 검증: ${p.unityVerify ? "켜짐" : "없음"}, 화면 캡처: ${p.capture ? "가능" : "불가"}` +
           `${p.defaultModel ? `, 기본 모델: ${p.defaultModel}` : ""}${p.defaultEffort ? `, 기본 effort: ${p.defaultEffort}` : ""})`
       );
       return text(`등록된 프로젝트:\n${lines.join("\n")}\n\neffort 선택지: ${(data.efforts ?? []).join(" | ")}`);
@@ -193,12 +197,17 @@ function createServer(req) {
         effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("claude --effort 추론 레벨"),
         maxTurns: z.number().int().min(1).max(1000).optional().describe("claude --max-turns 상한"),
         skipPermissions: z.boolean().optional().describe("true면 --dangerously-skip-permissions (기본 acceptEdits + git 커밋 허용)"),
+        skipVerify: z.boolean().optional().describe("true면 이 잡의 Unity 컴파일 검증을 건너뛴다 (검증이 계속 정지할 때만)"),
+        capture: z
+          .boolean()
+          .optional()
+          .describe("true면 검증 뒤 에디터를 띄워 스크린샷·녹화를 남긴다 (worker_projects에서 화면 캡처가 가능한 프로젝트만)"),
       },
     },
-    async ({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions }) => {
+    async ({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions, skipVerify, capture }) => {
       const data = await api("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions }),
+        body: JSON.stringify({ project, prompt, title, mode, model, effort, maxTurns, skipPermissions, skipVerify, capture }),
       });
       return text(
         `잡을 제출했습니다.\njobId: ${data.id}\n브랜치: ${data.branch ?? "(실행 시 배정)"}\n보드: ${boardUrl}/jobs/${data.id}\n` +

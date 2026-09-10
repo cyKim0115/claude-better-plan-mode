@@ -23,6 +23,9 @@ description: >-
    `model`·`effort`에 넣는다. 말하지 않으면 **둘 다 생략**한다 (프로젝트 기본값 → 워커 PC 기본값 순으로 적용된다).
    `effort`는 `low | medium | high | xhigh | max`. 모델은 alias(`sonnet`, `opus`, `haiku`, `fable`) 또는 전체 이름.
 4. **지시문 작성** — `job_submit`의 `prompt`는 저쪽 세션이 받는 전부다. 아래 "지시문" 절을 따른다.
+   Unity 검증이 그 프로젝트에서 계속 정지·실패하는 상황이면 `skipVerify: true`로 제출한다 — 사용자가 검증을
+   원할 때는 붙이지 않는다. 이미 제출한 잡도 **아직 시작 전(`queued`)이면** 보드 `/jobs/<id>/edit`에서
+   지시문·모드·모델·검증 생략을 고칠 수 있다고 안내한다.
 5. **제출 후 보고** — `job_submit`은 즉시 `jobId`와 보드 URL을 돌려준다. 사용자에게 다음 세 가지를 전한다:
    jobId(앞 8자리), 보드 URL, "끝나면 Slack으로 알림이 간다". 그리고 **기다리지 않는다.**
 6. **상태 확인** — 사용자가 물을 때만 `job_status`. 자동으로 반복 폴링하지 않는다 (잡은 수 분~수십 분 걸린다).
@@ -39,6 +42,8 @@ description: >-
 - `failed` / `cancelled` 인데 worktree가 남아 있으면 → **`job_resume(jobId)`** 로 커밋 단계부터 이어서 push·PR까지 끝낸다.
   claude 세션은 다시 돌지 않는다. 이미 만들어진 변경을 원격에 올리는 용도다.
 - 실패 원인이 Unity 검증(시간 초과·컴파일 실패)이고 사용자가 "그냥 올려"라고 하면 → `job_resume(jobId, skipVerify: true)`.
+  같은 프로젝트의 뒤이은 잡도 같은 곳에서 걸린다 — 이어서 제출할 때는 `skipVerify: true`를 붙이거나,
+  대기 중인 잡은 보드에서 검증 생략으로 고치도록 안내한다.
 - `pr` 모드는 검증 전에 브랜치를 먼저 push하므로, 검증이 죽어도 작업물은 원격에 있다. 그래도 PR이 없으면 `job_resume`.
 - `direct` 모드는 검증을 통과해야만 push한다. 실패 시 선택지는 둘: `job_resume(skipVerify)` 또는 pr 모드로 재제출.
 - 변경 자체가 잘못됐으면 resume하지 말고 새 잡으로 재제출한다.

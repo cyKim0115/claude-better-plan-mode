@@ -40,6 +40,10 @@ const CLAUDE_STALL_MS = minutes("WORKER_CLAUDE_STALL_MIN", 20);
 const UNITY_TIMEOUT_MS = minutes("WORKER_UNITY_TIMEOUT_MIN", 45);
 /** Unity 로그가 이 시간 동안 안 늘면 멈춘 것으로 본다 */
 const UNITY_STALL_MS = minutes("WORKER_UNITY_STALL_MIN", 10);
+/** 캡처용 GUI 에디터 전체 상한 (임포트는 검증에서 이미 끝나 있다) */
+const CAPTURE_TIMEOUT_MS = minutes("WORKER_CAPTURE_TIMEOUT_MIN", 20);
+/** 캡처 에디터가 이 시간 동안 로그를 안 내면 멈춘 것으로 본다 */
+const CAPTURE_STALL_MS = minutes("WORKER_CAPTURE_STALL_MIN", 8);
 /** git / gh 한 번의 상한 (네트워크 포함) */
 const GIT_TIMEOUT_MS = minutes("WORKER_GIT_TIMEOUT_MIN", 10);
 /** 스위퍼가 "실행 중인데 프로세스도 없고 활동도 없음"으로 판정하는 기준 */
@@ -159,6 +163,7 @@ export async function loadProjects(): Promise<Record<string, ProjectConfig>> {
       allowDirect: v.allowDirect !== false,
       unityPath: typeof v.unityPath === "string" && v.unityPath ? v.unityPath : undefined,
       unityMcpPort: typeof v.unityMcpPort === "number" ? v.unityMcpPort : undefined,
+      captureMethod: typeof v.captureMethod === "string" && /^[A-Za-z0-9_.]+$/.test(v.captureMethod) ? v.captureMethod : undefined,
       setupCommand: typeof v.setupCommand === "string" && v.setupCommand ? v.setupCommand : undefined,
       seedUnityLibrary: v.seedUnityLibrary === true,
       defaultModel: typeof v.defaultModel === "string" && v.defaultModel ? v.defaultModel : undefined,
@@ -221,6 +226,10 @@ export interface SubmitJobOptions {
   title?: string;
   mode?: JobMode;
   skipPermissions?: boolean;
+  /** true면 이 잡의 Unity 검증을 건너뛴다 */
+  skipVerify?: boolean;
+  /** true면 검증 뒤 GUI 에디터로 스크린샷·녹화를 남긴다 (projects.json captureMethod 필요) */
+  capture?: boolean;
   model?: string;
   effort?: JobEffort;
   maxTurns?: number;
@@ -281,6 +290,9 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   if (mode === "direct" && cfg.allowDirect === false) {
     throw new Error(`프로젝트 ${opts.project}는 direct 모드가 잠겨 있습니다 (projects.json allowDirect: false)`);
   }
+  if (opts.capture === true && !cfg.captureMethod) {
+    throw new Error(`프로젝트 ${opts.project}는 화면 캡처를 지원하지 않습니다 (projects.json에 captureMethod 없음)`);
+  }
   if (opts.model !== undefined && !/^[A-Za-z0-9._-]{1,80}$/.test(opts.model)) throw new Error("model 형식이 올바르지 않습니다");
   if (opts.effort !== undefined && !isEffort(opts.effort)) throw new Error(`effort는 ${JOB_EFFORTS.join(" | ")} 중 하나`);
   if (opts.maxTurns !== undefined && (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1 || opts.maxTurns > 1000)) {
@@ -302,6 +314,8 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
     startBranch,
     parentJobId: parent?.id,
     skipPermissions: opts.skipPermissions === true,
+    skipVerify: opts.skipVerify === true ? true : undefined,
+    capture: opts.capture === true ? true : undefined,
     model: opts.model ?? cfg.defaultModel,
     effort: opts.effort ?? cfg.defaultEffort,
     maxTurns: opts.maxTurns,
@@ -315,6 +329,104 @@ export async function submitJob(opts: SubmitJobOptions): Promise<Job> {
   );
   await writeJob(job);
   enqueue(job, cfg, opts.port ?? 3000, { resume: false });
+  return job;
+}
+
+export interface UpdateQueuedJobOptions {
+  title?: string;
+  prompt?: string;
+  mode?: JobMode;
+  /** null이면 기본값(프로젝트 defaultModel → CLI 기본)으로 되돌린다 */
+  model?: string | null;
+  effort?: JobEffort | null;
+  maxTurns?: number | null;
+  skipVerify?: boolean;
+  capture?: boolean;
+  skipPermissions?: boolean;
+}
+
+/**
+ * 아직 시작하지 않은(queued) 잡의 제출 옵션을 고친다.
+ * 실행 중·종료된 잡은 건드리지 않는다 — 그 상태는 runJob이 소유한다.
+ * 검증을 모두 마친 뒤 마지막에 한 번에 반영한다 (await 사이에 잡이 시작될 수 있으므로 직전에 상태를 다시 본다).
+ */
+export async function updateQueuedJob(id: string, patch: UpdateQueuedJobOptions): Promise<Job> {
+  const job = await getJob(id);
+  if (!job) throw new Error("job not found");
+  if (job.status !== "queued") throw new Error(`대기 중인 잡만 수정할 수 있습니다 (현재 ${job.status})`);
+
+  const projects = await loadProjects();
+  const cfg = projects[job.project];
+  if (!cfg) throw new Error(`프로젝트 설정이 사라졌습니다: ${job.project}`);
+
+  const apply: Array<() => void> = [];
+  const changes: string[] = [];
+
+  if (patch.title !== undefined) {
+    const title = patch.title.trim().slice(0, 80);
+    if (!title) throw new Error("제목이 비어 있습니다");
+    apply.push(() => (job.title = title));
+    changes.push("제목");
+  }
+  if (patch.prompt !== undefined) {
+    // 플랜 착수 잡의 실행 지시문은 계획표에서 조립된다 — 여기서 고치면 실제 실행 내용과 어긋난다
+    if (job.planId) throw new Error("플랜 착수 잡의 지시문은 계획표에서 고칩니다");
+    const prompt = patch.prompt.trim();
+    if (!prompt) throw new Error("지시문이 비어 있습니다");
+    apply.push(() => (job.prompt = prompt));
+    changes.push("지시문");
+  }
+  if (patch.mode !== undefined) {
+    if (patch.mode !== "pr" && patch.mode !== "direct") throw new Error("mode는 pr 또는 direct");
+    if (patch.mode === "direct" && cfg.allowDirect === false) {
+      throw new Error(`프로젝트 ${job.project}는 direct 모드가 잠겨 있습니다 (projects.json allowDirect: false)`);
+    }
+    const mode = patch.mode;
+    apply.push(() => (job.mode = mode));
+    changes.push(`모드 ${mode}`);
+  }
+  if (patch.model !== undefined) {
+    const model = patch.model === null || patch.model === "" ? undefined : patch.model;
+    if (model !== undefined && !/^[A-Za-z0-9._-]{1,80}$/.test(model)) throw new Error("model 형식이 올바르지 않습니다");
+    apply.push(() => (job.model = model));
+    changes.push(`모델 ${model ?? "기본"}`);
+  }
+  if (patch.effort !== undefined) {
+    const effort = patch.effort === null ? undefined : patch.effort;
+    if (effort !== undefined && !isEffort(effort)) throw new Error(`effort는 ${JOB_EFFORTS.join(" | ")} 중 하나`);
+    apply.push(() => (job.effort = effort));
+    changes.push(`effort ${effort ?? "기본"}`);
+  }
+  if (patch.maxTurns !== undefined) {
+    const maxTurns = patch.maxTurns === null ? undefined : patch.maxTurns;
+    if (maxTurns !== undefined && (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 1000)) {
+      throw new Error("maxTurns는 1~1000 정수");
+    }
+    apply.push(() => (job.maxTurns = maxTurns));
+    changes.push(`maxTurns ${maxTurns ?? "기본"}`);
+  }
+  if (patch.skipVerify !== undefined) {
+    const skipVerify = patch.skipVerify === true;
+    apply.push(() => (job.skipVerify = skipVerify || undefined));
+    changes.push(`Unity 검증 ${skipVerify ? "생략" : "수행"}`);
+  }
+  if (patch.capture !== undefined) {
+    const capture = patch.capture === true;
+    if (capture && !cfg.captureMethod) throw new Error(`프로젝트 ${job.project}에 captureMethod가 없어 화면 캡처를 켤 수 없습니다`);
+    apply.push(() => (job.capture = capture || undefined));
+    changes.push(`화면 캡처 ${capture ? "수행" : "생략"}`);
+  }
+  if (patch.skipPermissions !== undefined) {
+    const skipPermissions = patch.skipPermissions === true;
+    apply.push(() => (job.skipPermissions = skipPermissions));
+    changes.push(`권한 확인 ${skipPermissions ? "생략" : "기본"}`);
+  }
+  if (apply.length === 0) throw new Error("바꿀 항목이 없습니다");
+
+  if (job.status !== "queued") throw new Error(`이미 실행이 시작돼 수정할 수 없습니다 (현재 ${job.status})`);
+  for (const set of apply) set();
+  pushLog(job, "info", `대기 중 수정: ${changes.join(", ")}`);
+  scheduleSave(job, true);
   return job;
 }
 
@@ -813,13 +925,63 @@ async function seedLibrary(job: Job, cfg: ProjectConfig, worktree: string) {
   }
 }
 
-/** 배치모드 컴파일. 반환값은 job.verify에 그대로 들어간다. */
+/**
+ * worktree에서 뜨는 Unity가 메인 에디터의 MCP 브리지(AI Game Developer, 기본 :28117)에 붙지 못하게 막는다.
+ *
+ * 이 설정 파일이 없으면 플러그인이 기본 호스트로 붙는다. 매니저는 중복 연결을 끊지만
+ * 플러그인이 재연결을 계속 시도해 -quit가 끝나지 않는다 (검증이 "정지"로 오판되던 원인).
+ * 사용자가 쓰던 에디터의 MCP 연결을 잡이 뺏는 것도 같이 막힌다.
+ * UserSettings/는 대상 리포에서 gitignore라 이 파일이 커밋을 오염시키지 않는다.
+ *
+ * 다른 브리지(com.coplaydev.unity-mcp)는 프로젝트 경로 해시로 포트를 나눠 잡고
+ * 배치모드에서는 UNITY_MCP_ALLOW_BATCH 없이는 뜨지 않으므로 따로 막지 않는다.
+ */
+async function isolateUnityMcp(job: Job, worktree: string) {
+  const dir = path.join(worktree, "UserSettings");
+  // 127.0.0.1:1은 늘 연결이 거부되는 포트 — 붙기를 즉시 포기하게 만든다
+  const settings = {
+    host: "http://127.0.0.1:1",
+    keepConnected: false,
+    maxConsecutiveConnectionFailures: 1,
+    connectTimeoutSeconds: 1,
+    timeoutMs: 1000,
+    keepServerRunning: false,
+    generateSkillFiles: false,
+    logLevel: "Warning",
+  };
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "AI-Game-Developer-Config.json"), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+    pushLog(job, "info", "worktree의 MCP 브리지 연결을 차단했습니다 (메인 에디터 연결 보호)");
+  } catch (e) {
+    pushLog(job, "stderr", `MCP 브리지 차단 설정을 쓰지 못했습니다: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** 컴파일 판정이 선 뒤 에디터가 스스로 끝나기를 기다리는 시간 */
+const UNITY_EXIT_GRACE_MS = 30_000;
+/** 개행 없이 이만큼 쌓이면 한 줄로 간주하고 흘려보낸다 (버퍼 무한 증가 방지) */
+const LINE_CARRY_MAX = 8192;
+
+const RE_COMPILE_ERROR = /error CS\d+|Scripts have compiler errors/;
+/** 첫 임포트와 스크립트 컴파일이 모두 끝나면 나오는 줄 — 여기서 컴파일 판정이 확정된다 */
+const RE_REFRESH_DONE = /Asset Pipeline Refresh[^\n]*Initiated by InitialRefreshV2/;
+const RE_MILESTONE = /(Start importing|Refreshing native plugins|Compil\w+ scripts|error CS\d+|Scripts have compiler errors|Exiting batchmode)[^\n]{0,160}/;
+
+/**
+ * 배치모드 컴파일. 반환값은 job.verify에 그대로 들어간다.
+ *
+ * 판정은 종료 코드가 아니라 **로그**로 한다. 컴파일이 끝났는데도 에디터가 종료되지 못하는
+ * 경우가 있어(플러그인이 커넥션을 물고 있는 등) 종료만 기다리면 통과한 검증이 "정지"로 찍힌다.
+ * 판정이 서면 잠시 기다렸다가 프로세스를 정리하고, 판정 결과를 그대로 돌려준다.
+ */
 async function verifyUnity(job: Job, cfg: ProjectConfig, worktree: string): Promise<Job["verify"]> {
   if (!cfg.unityPath || !UNITY_VERIFY) return "skipped";
   if (!(await isUnityProject(worktree))) {
     pushLog(job, "info", "Unity 프로젝트가 아니라 검증을 건너뜁니다");
     return "skipped";
   }
+  await isolateUnityMcp(job, worktree);
   const logFile = path.join(DATA_DIR, `${job.id}-unity.log`);
   const logHandle = await fs.open(logFile, "a");
   pushLog(
@@ -827,7 +989,51 @@ async function verifyUnity(job: Job, cfg: ProjectConfig, worktree: string): Prom
     "info",
     `Unity 배치모드 컴파일 검증 시작 (로그: ${logFile}, 상한 ${Math.round(UNITY_TIMEOUT_MS / 60_000)}분, 무출력 ${Math.round(UNITY_STALL_MS / 60_000)}분이면 중단)`
   );
+
   let lastMilestone = "";
+  let verdict: "passed" | "failed" | undefined;
+  let exitTimer: NodeJS.Timeout | undefined;
+  const errors: string[] = [];
+
+  const settle = (v: "passed" | "failed") => {
+    if (verdict) return;
+    verdict = v;
+    pushLog(
+      job,
+      "info",
+      `Unity 컴파일 판정 확정: ${v === "passed" ? "통과" : "실패"} — 에디터 종료를 최대 ${Math.round(UNITY_EXIT_GRACE_MS / 1000)}초 기다립니다`
+    );
+    exitTimer = setTimeout(() => {
+      pushLog(job, "info", "컴파일은 끝났는데 프로세스가 종료되지 않아 정리합니다 (판정에는 영향 없음)");
+      killProc(job.id);
+    }, UNITY_EXIT_GRACE_MS);
+    exitTimer.unref?.();
+  };
+
+  const onLine = (line: string) => {
+    if (RE_COMPILE_ERROR.test(line) && errors.length < 8) errors.push(line.trim().slice(0, 300));
+    const m = RE_MILESTONE.exec(line);
+    if (m && m[0] !== lastMilestone) {
+      lastMilestone = m[0];
+      pushLog(job, "info", `unity: ${m[0]}`);
+    }
+    // 에러 줄은 이 줄보다 먼저 나오므로, 여기까지 오면 errors 수집이 끝나 있다
+    if (RE_REFRESH_DONE.test(line)) settle(errors.length > 0 ? "failed" : "passed");
+  };
+
+  let carry = "";
+  const feed = (chunk: string) => {
+    void logHandle.write(chunk);
+    carry += chunk;
+    const lines = carry.split("\n");
+    carry = lines.pop() ?? "";
+    for (const line of lines) onLine(line);
+    if (carry.length > LINE_CARRY_MAX) {
+      onLine(carry);
+      carry = "";
+    }
+  };
+
   try {
     // -logFile - : 로그를 stdout으로 → 워치독이 진행 여부를 볼 수 있다. 파일에도 그대로 남긴다.
     const r = await exec(
@@ -839,36 +1045,183 @@ async function verifyUnity(job: Job, cfg: ProjectConfig, worktree: string): Prom
         quiet: true,
         timeoutMs: UNITY_TIMEOUT_MS,
         stallMs: UNITY_STALL_MS,
-        onStdout: (chunk) => {
-          void logHandle.write(chunk);
-          // 사람이 볼 만한 이정표만 잡 로그에 남긴다
-          const m = /(Start importing|Refreshing native plugins|Compil\w+ scripts|error CS\d+|Scripts have compiler errors|Exiting batchmode)[^\n]{0,160}/.exec(chunk);
-          if (m && m[0] !== lastMilestone) {
-            lastMilestone = m[0];
-            pushLog(job, "info", `unity: ${m[0]}`);
-          }
-        },
-        onStderr: (chunk) => void logHandle.write(chunk),
+        onStdout: feed,
+        onStderr: feed,
       }
     );
+    if (carry) onLine(carry);
+
+    if (verdict === "failed") {
+      pushLog(job, "stderr", `Unity 검증 실패 — 컴파일 에러\n${errors.join("\n")}`);
+      return "failed";
+    }
+    if (verdict === "passed") {
+      if (r.code !== 0 && r.code !== null) {
+        pushLog(job, "info", `Unity가 exit ${r.code}로 끝났지만 컴파일은 통과했습니다 (로그: ${logFile})`);
+      }
+      pushLog(job, "info", "Unity 컴파일 검증 통과");
+      return "passed";
+    }
+
+    // 판정이 서기 전에 끝난 경우 — 컴파일까지 못 갔다는 뜻이라 종료 상태로 판단한다
     if (r.killed) {
-      pushLog(job, "stderr", `Unity 검증 ${r.killed === "timeout" ? "시간 초과" : "정지 감지"} — 로그: ${logFile}`);
+      pushLog(job, "stderr", `Unity 검증 ${r.killed === "timeout" ? "시간 초과" : "정지 감지"} (컴파일 전) — 로그: ${logFile}`);
       return "timeout";
     }
     if (r.code !== 0) {
       const tail = await fs.readFile(logFile, "utf8").then((t) => t.slice(-2000)).catch(() => "");
-      const errs = tail
-        .split("\n")
-        .filter((l) => /error CS\d+|Scripts have compiler errors/.test(l))
-        .slice(0, 8)
-        .join("\n");
+      const errs = tail.split("\n").filter((l) => RE_COMPILE_ERROR.test(l)).slice(0, 8).join("\n");
       pushLog(job, "stderr", `Unity 검증 실패 (exit ${r.code})${errs ? `\n${errs}` : ""}`);
       return "failed";
     }
-    pushLog(job, "info", "Unity 컴파일 검증 통과");
+    pushLog(job, "info", "Unity 컴파일 검증 통과 (판정 줄 없이 정상 종료)");
     return "passed";
   } finally {
+    if (exitTimer) clearTimeout(exitTimer);
     await logHandle.close().catch(() => undefined);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 화면 캡처 (GUI 에디터 인스턴스)
+//
+// 배치모드(-nographics)는 렌더링을 안 하므로 스크린샷·녹화를 못 남긴다. 화면 산출물이 필요한
+// 잡만 검증 뒤에 에디터를 GUI로 한 번 더 띄운다 (같은 worktree라 Library가 warm이다).
+//
+// 대상 리포와의 계약:
+// - 워커가 -executeMethod <captureMethod>로 정적 메서드를 부른다.
+// - 산출물 경로는 환경변수 AGENT_CAPTURE_OUT(절대경로, 워커가 미리 만들어 둔다)로 넘긴다.
+//   worktree 밖이라 커밋을 오염시키지 않고, worktree가 정리돼도 산출물이 남는다.
+// - 스크립트는 끝나면 AGENT_CAPTURE_DONE(성공) 또는 AGENT_CAPTURE_FAIL <사유>를 로그로 찍고
+//   EditorApplication.Exit(0)을 호출한다. 워커는 그 표시를 보고 판정한다.
+// - OS 화면 캡처(lib/screenshot.ts)를 쓰지 않는다. 창이 가려지거나 사용자의 다른 창이
+//   찍히면 안 되므로, 캡처는 반드시 에디터 안에서 Game view 렌더 결과로 떠야 한다.
+// ---------------------------------------------------------------------------
+
+/** 캡처 산출물 보관 경로 — worktree가 지워져도 남는다 */
+export function jobCaptureDir(id: string): string {
+  if (!/^[a-z0-9-]+$/i.test(id)) throw new Error("invalid job id");
+  return path.join(DATA_DIR, `${id}-captures`);
+}
+
+/** 캡처 파일 하나의 경로 (보드에서 서빙할 때 씀). 우리가 수집한 이름만 허용한다. */
+export function jobCapturePath(id: string, name: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(name) || name.startsWith(".")) throw new Error("invalid capture name");
+  return path.join(jobCaptureDir(id), name);
+}
+
+const CAPTURE_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".mov"];
+const RE_CAPTURE_DONE = /AGENT_CAPTURE_DONE/;
+const RE_CAPTURE_FAIL = /AGENT_CAPTURE_FAIL[^\n]{0,200}/;
+
+/**
+ * GUI 에디터를 띄워 캡처를 만든다. 실패해도 예외를 던지지 않는다 —
+ * 화면 산출물은 부가물이라, 여기서 잡 전체를 실패시키지 않는다 (사유만 job.captureError에 남긴다).
+ */
+async function runCapture(job: Job, cfg: ProjectConfig, worktree: string): Promise<void> {
+  if (!cfg.unityPath || !cfg.captureMethod) {
+    job.captureError = "captureMethod가 설정되지 않았습니다";
+    pushLog(job, "stderr", `화면 캡처를 건너뜁니다: ${job.captureError}`);
+    return;
+  }
+  await isolateUnityMcp(job, worktree);
+
+  const outDir = jobCaptureDir(job.id);
+  await fs.mkdir(outDir, { recursive: true });
+  const logFile = path.join(DATA_DIR, `${job.id}-capture.log`);
+  const logHandle = await fs.open(logFile, "a");
+  pushLog(
+    job,
+    "info",
+    `화면 캡처 시작 — 에디터 인스턴스로 ${cfg.captureMethod} 실행 (출력: ${outDir}, 상한 ${Math.round(CAPTURE_TIMEOUT_MS / 60_000)}분)`
+  );
+
+  let done = false;
+  let failReason: string | undefined;
+  let exitTimer: NodeJS.Timeout | undefined;
+
+  const onLine = (line: string) => {
+    if (!done && RE_CAPTURE_DONE.test(line)) {
+      done = true;
+      pushLog(job, "info", `캡처 완료 표시 확인 — 에디터 종료를 최대 ${Math.round(UNITY_EXIT_GRACE_MS / 1000)}초 기다립니다`);
+      exitTimer = setTimeout(() => {
+        pushLog(job, "info", "캡처는 끝났는데 에디터가 종료되지 않아 정리합니다");
+        killProc(job.id);
+      }, UNITY_EXIT_GRACE_MS);
+      exitTimer.unref?.();
+      return;
+    }
+    const fail = RE_CAPTURE_FAIL.exec(line);
+    if (fail && !failReason) {
+      failReason = fail[0].trim();
+      pushLog(job, "stderr", `캡처 스크립트 실패: ${failReason}`);
+      killProc(job.id);
+    }
+  };
+
+  let carry = "";
+  const feed = (chunk: string) => {
+    void logHandle.write(chunk);
+    carry += chunk;
+    const lines = carry.split("\n");
+    carry = lines.pop() ?? "";
+    for (const line of lines) onLine(line);
+    if (carry.length > LINE_CARRY_MAX) {
+      onLine(carry);
+      carry = "";
+    }
+  };
+
+  try {
+    // -batchmode를 붙이지 않는다 — 렌더링이 필요하다. GUI 세션(LaunchAgent)에서만 동작한다.
+    const r = await exec(
+      job,
+      cfg.unityPath,
+      ["-projectPath", worktree, "-executeMethod", cfg.captureMethod, "-logFile", "-"],
+      {
+        cwd: worktree,
+        quiet: true,
+        timeoutMs: CAPTURE_TIMEOUT_MS,
+        stallMs: CAPTURE_STALL_MS,
+        env: { ...process.env, AGENT_CAPTURE_OUT: outDir, AGENT_CAPTURE_JOB: job.id },
+        onStdout: feed,
+        onStderr: feed,
+      }
+    );
+    if (carry) onLine(carry);
+
+    job.captures = await collectCaptures(outDir);
+    if (failReason) {
+      job.captureError = failReason;
+    } else if (!done) {
+      job.captureError = r.killed
+        ? `캡처 ${r.killed === "timeout" ? "시간 초과" : "정지 감지"} — 로그: ${logFile}`
+        : `완료 표시 없이 에디터가 끝났습니다 (exit ${r.code}) — 로그: ${logFile}`;
+      pushLog(job, "stderr", job.captureError);
+    }
+    if (job.captures.length > 0) {
+      pushLog(job, "info", `캡처 산출물 ${job.captures.length}개 수집: ${job.captures.join(", ")}`);
+    } else if (!job.captureError) {
+      job.captureError = "완료 표시는 있었지만 산출물이 없습니다";
+      pushLog(job, "stderr", job.captureError);
+    }
+  } finally {
+    if (exitTimer) clearTimeout(exitTimer);
+    await logHandle.close().catch(() => undefined);
+    scheduleSave(job, true);
+  }
+}
+
+/** 캡처 폴더에서 알아볼 수 있는 산출물만 이름순으로 모은다 */
+async function collectCaptures(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && CAPTURE_EXTS.includes(path.extname(e.name).toLowerCase()))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
   }
 }
 
@@ -909,6 +1262,8 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
 
   const repo = cfg.path;
   const base = job.baseBranch;
+  // 검증 생략은 재개 옵션(job_resume)과 잡 자체 설정(제출·수정 시 지정) 둘 다에서 온다
+  const skipVerify = run.skipVerify === true || job.skipVerify === true;
   let pushed = false;
   let startPoint = `origin/${base}`;
 
@@ -1005,9 +1360,9 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       checkCancel();
 
       // 5. verify
-      if (run.skipVerify) {
+      if (skipVerify) {
         job.verify = "skipped";
-        pushLog(job, "info", "재개 옵션으로 Unity 검증 생략");
+        pushLog(job, "info", `Unity 검증 생략 (${run.skipVerify ? "재개 옵션" : "잡 설정"})`);
       } else {
         setStage(job, "verify");
         job.verify = await verifyUnity(job, cfg, worktree);
@@ -1015,7 +1370,15 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
         checkCancel();
       }
 
-      // 6. PR — 열려 있는 PR이 있으면 재사용하고, 이미 머지·클로즈됐으면 새로 만든다
+      // 6. capture — 화면 산출물이 필요한 잡만. 배치모드로는 못 하는 일이라 에디터를 GUI로 띄운다.
+      //    실패해도 잡을 실패시키지 않는다 (사유는 job.captureError).
+      if (job.capture) {
+        setStage(job, "capture");
+        await runCapture(job, cfg, worktree);
+        checkCancel();
+      }
+
+      // 7. PR — 열려 있는 PR이 있으면 재사용하고, 이미 머지·클로즈됐으면 새로 만든다
       //    (이어서한 잡은 이전 PR이 머지된 뒤에 커밋이 더 붙을 수 있다)
       setStage(job, "pr");
       const existing = await exec(job, "gh", ["pr", "view", branch, "--json", "state,url"], {
@@ -1040,7 +1403,18 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
             : job.verify === "skipped"
               ? "Unity 컴파일 검증: 생략"
               : `**Unity 컴파일 검증: ${verifyLabel(job.verify)} — 머지 전 확인 필요**`;
-        const body = `자동 생성 — 원격 워커 잡 ${job.id}\n\n${verifyLine}\n\n## 지시\n${job.prompt}\n\n## 세션 요약\n${lastResult(job)}`;
+        const captureLine = job.capture
+          ? job.captures?.length
+            ? `화면 캡처: ${job.captures.length}개 — 보드의 잡 상세에서 확인`
+            : `화면 캡처: 산출물 없음${job.captureError ? ` (${job.captureError})` : ""}`
+          : "";
+        const body = [
+          `자동 생성 — 원격 워커 잡 ${job.id}`,
+          verifyLine,
+          ...(captureLine ? [captureLine] : []),
+          `## 지시\n${job.prompt}`,
+          `## 세션 요약\n${lastResult(job)}`,
+        ].join("\n\n");
         const title = job.verify === "failed" || job.verify === "timeout" ? `[검증 ${verifyLabel(job.verify)}] ${job.title}` : job.title;
         const pr = await exec(job, "gh", ["pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body], {
           cwd: worktree,
@@ -1053,9 +1427,9 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       }
     } else {
       // direct: 검증 → 최신 base 위로 rebase → fast-forward push
-      if (run.skipVerify) {
+      if (skipVerify) {
         job.verify = "skipped";
-        pushLog(job, "info", "재개 옵션으로 Unity 검증 생략");
+        pushLog(job, "info", `Unity 검증 생략 (${run.skipVerify ? "재개 옵션" : "잡 설정"})`);
       } else {
         setStage(job, "verify");
         job.verify = await verifyUnity(job, cfg, worktree);
@@ -1064,6 +1438,11 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
         if (job.verify === "failed" || job.verify === "timeout") {
           throw new Error(`Unity 검증 ${verifyLabel(job.verify)} — direct 모드는 push하지 않습니다. 확인 후 job_resume(skipVerify) 또는 pr 모드로 재제출`);
         }
+      }
+      if (job.capture) {
+        setStage(job, "capture");
+        await runCapture(job, cfg, worktree);
+        checkCancel();
       }
       setStage(job, "push");
       const refetch = await git(job, worktree, ["fetch", "origin", base]);
@@ -1079,7 +1458,7 @@ async function runJob(job: Job, cfg: ProjectConfig, port: number, run: RunOption
       pushed = true;
     }
 
-    // 7. cleanup — 검증을 통과·생략한 경우만. 실패/정지면 사람이 볼 수 있게 남긴다.
+    // 8. cleanup — 검증을 통과·생략한 경우만. 실패/정지면 사람이 볼 수 있게 남긴다.
     //    여기서 남긴 worktree도 보관 기한이 지나면 GC가 치운다 (runWorktreeGc).
     setStage(job, "cleanup");
     const keep = KEEP_WORKTREE || job.verify === "failed" || job.verify === "timeout";

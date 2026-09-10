@@ -17,6 +17,7 @@ interface JobSummary {
   status: JobStatus;
   stage: string;
   verify?: JobVerifyResult;
+  skipVerify?: boolean;
   createdAt: string;
   endedAt?: string;
   lastActivityAt?: string;
@@ -200,10 +201,14 @@ export default function JobList() {
                 {j.status}
               </span>
               <a href={`/jobs/${j.id}`}><strong>{j.title}</strong></a>
+              {j.status === "queued" && (
+                <a href={`/jobs/${j.id}/edit`} className="small muted">수정</a>
+              )}
               <span className="muted small">
                 {j.project} · {j.mode} · {j.stage}
                 {j.model ? ` · ${j.model}` : ""}{j.effort ? ` · ${j.effort}` : ""}
                 {j.verify && j.verify !== "skipped" ? ` · 검증 ${j.verify}` : ""}
+                {j.skipVerify && !j.verify ? " · 검증 생략" : ""}
                 {j.resumeCount ? ` · 재개 ${j.resumeCount}회` : ""}
                 {j.followUpCount ? ` · 이어서 ${j.followUpCount}회` : ""}
                 {j.parentJobId ? " · 이어받음" : ""}

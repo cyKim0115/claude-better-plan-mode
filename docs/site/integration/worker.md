@@ -48,6 +48,12 @@ Better Plan Mode를 **원격 워커**로 띄우면, 다른 PC의 Claude Code가 
 
 모든 외부 프로세스(claude, Unity, git, gh)에 워치독이 붙습니다 — 전체 상한과 "출력 없이 멈춤" 감지, 둘 다입니다. 걸리면 프로세스 트리를 죽이고 잡을 확정하며, 워크트리는 남깁니다. 실패·취소한 잡은 `job_resume`(보드의 **커밋부터 마무리**)으로 커밋 단계부터 push·PR까지 이어서 끝낼 수 있고, Unity 검증 때문에 막혔으면 `skipVerify`로 건너뛸 수 있습니다. 기준 시간은 `.env.example`의 `WORKER_*_MIN` 항목을 보세요.
 
+### 대기 중인 잡 고치기
+
+큐에 들어갔지만 아직 시작하지 않은(`queued`) 잡은 잡 상세의 **수정** 버튼(또는 잡 목록의 `수정` 링크)으로 지시문·제목·모드·모델·추론 레벨·**Unity 검증 생략**을 바꿀 수 있습니다. 실행이 시작되면 서버가 수정을 거부하므로, 이미 돌기 시작한 잡은 취소한 뒤 다시 제출하거나 끝난 뒤 이어서 하세요.
+
+Unity 검증이 계속 정지·실패하는 상황이면 이 화면에서 **Unity 검증 생략**을 켜 두는 것이 가장 빠릅니다. 잡별 설정이라 `job_submit`의 `skipVerify`로 제출 시점에 지정할 수도 있습니다. 검증을 생략하면 컴파일 확인은 세션 지시문에 맡기게 되므로, `direct` 모드와 함께 쓸 때는 특히 주의하세요.
+
 ### 끝난 잡을 이어서 하기
 
 잡 상세(`/jobs/<id>`) 오른쪽 위 버튼으로 이어 갑니다. 셋은 서로 다른 일을 합니다.
@@ -133,7 +139,7 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp \
 | 툴 | 동작 |
 |----|------|
 | `worker_projects` | 등록된 프로젝트 키 목록 |
-| `job_submit` | 잡 제출 → `jobId`와 보드 URL 즉시 반환 (실행은 백그라운드). `mode`, `model`, `effort`, `maxTurns` 선택 |
+| `job_submit` | 잡 제출 → `jobId`와 보드 URL 즉시 반환 (실행은 백그라운드). `mode`, `model`, `effort`, `maxTurns`, `skipVerify` 선택 |
 | `job_status` | 상태·단계·검증 결과·PR 링크·오류·마지막 활동 시각 + 최근 로그 8줄 |
 | `job_logs` | `since` 커서로 증분 로그 |
 | `job_list` | 최근 잡 목록 |

@@ -343,6 +343,13 @@ export async function notifyJobFinished(job: Job, port: number): Promise<void> {
         inline: true,
       });
     }
+    if (job.capture) {
+      fields.push({
+        name: "화면 캡처",
+        value: job.captures?.length ? `${job.captures.length}개` : `산출물 없음${job.captureError ? ` (${job.captureError})` : ""}`,
+        inline: true,
+      });
+    }
     if (job.model || job.effort) fields.push({ name: "모델", value: `${job.model ?? "기본"}${job.effort ? ` / ${job.effort}` : ""}`, inline: true });
     if (job.stage) fields.push({ name: "마지막 단계", value: job.stage, inline: true });
     if (!ok && job.worktree) fields.push({ name: "이어서 마무리", value: `job_resume 또는 보드의 "이어서 마무리" 버튼 (worktree: ${job.worktree})` });

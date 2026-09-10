@@ -103,6 +103,7 @@ export type JobStage =
   | "claude"
   | "commit"
   | "verify"
+  | "capture"
   | "push"
   | "pr"
   | "cleanup"
@@ -143,6 +144,8 @@ export interface Job {
   error?: string;
   /** true면 --dangerously-skip-permissions (기본 acceptEdits + git 커밋 허용) */
   skipPermissions?: boolean;
+  /** true면 이 잡은 Unity 검증을 건너뛴다 (제출 시 지정하거나 대기 중에 수정) */
+  skipVerify?: boolean;
   /** claude --model (alias 또는 전체 이름). 생략 시 워커 PC의 기본 모델 */
   model?: string;
   /** claude --effort */
@@ -151,6 +154,12 @@ export interface Job {
   maxTurns?: number;
   /** Unity 배치모드 검증 결과. pr 모드는 실패해도 PR까지 올리고 결과를 본문·알림에 남긴다 */
   verify?: JobVerifyResult;
+  /** true면 검증 뒤 GUI 에디터 인스턴스를 띄워 스크린샷·녹화를 남긴다 (projects.json에 captureMethod가 있어야 한다) */
+  capture?: boolean;
+  /** 수집한 캡처 파일명 (data/jobs/<id>-captures/ 안). 화면 산출물이라 worktree가 지워져도 남는다 */
+  captures?: string[];
+  /** 캡처가 실패했으면 그 사유. 캡처 실패는 잡 자체를 실패시키지 않는다 */
+  captureError?: string;
   /** 마지막으로 로그가 붙은 시각 — 워치독·보드의 "멈춤" 판정 기준 */
   lastActivityAt?: string;
   /** job_resume으로 이어 돌린 횟수 (커밋 단계부터 재개 — claude 세션은 다시 돌지 않는다) */
@@ -184,6 +193,11 @@ export interface ProjectConfig {
   unityPath?: string;
   /** 참고용 — 이 프로젝트의 unity-mcp 브리지 포트 */
   unityMcpPort?: number;
+  /**
+   * GUI 에디터로 스크린샷·녹화를 남길 때 -executeMethod로 부를 정적 메서드 (예: "AgentCapture.Run").
+   * 없으면 이 프로젝트는 캡처를 못 한다. 어떤 씬을 얼마나 찍을지는 대상 리포가 소유한다.
+   */
+  captureMethod?: string;
   /** worktree 생성 후 실행할 셸 명령 (예: 의존성 설치) */
   setupCommand?: string;
   /**

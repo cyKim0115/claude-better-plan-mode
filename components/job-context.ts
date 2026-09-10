@@ -20,6 +20,10 @@ export interface JobContext {
   worktreeRemovedAt?: string;
   prUrl?: string;
   verify?: JobVerifyResult;
+  /** 이 잡만 Unity 검증을 건너뛰도록 지정됐는지 */
+  skipVerify?: boolean;
+  /** 검증 뒤 에디터를 띄워 화면 캡처를 남기도록 지정됐는지 */
+  capture?: boolean;
   commitCount?: number;
   planId?: string;
   parentJobId?: string;
@@ -51,6 +55,8 @@ export function toJobContext(job: Job): JobContext {
     worktreeRemovedAt: job.worktreeRemovedAt,
     prUrl: job.prUrl,
     verify: job.verify,
+    skipVerify: job.skipVerify,
+    capture: job.capture,
     commitCount: job.commitCount,
     planId: job.planId,
     parentJobId: job.parentJobId,
