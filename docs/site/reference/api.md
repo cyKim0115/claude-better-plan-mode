@@ -43,9 +43,10 @@ run 조회가 404면 서버 재시작으로 인메모리 기록이 사라진 경
 | Method · Path | Body | 반환 |
 |---------------|------|------|
 | `GET /api/jobs` | — | `{ projects, efforts, jobs }` — 등록된 프로젝트 요약과 잡 목록 |
-| `POST /api/jobs` | `{ project, prompt, title?, mode?, model?, effort?, maxTurns?, skipPermissions?, skipVerify?, parentJobId?, startFrom? }` | `{ id, status, branch }`. `parentJobId`를 주면 그 잡의 지시·세션 요약이 컨텍스트로 붙고, `startFrom: "parent"`면 그 잡 브랜치 위에서 worktree를 시작합니다 (기본 `"base"`) |
+| `POST /api/jobs` | `{ project, prompt, title?, mode?, model?, effort?, maxTurns?, skipPermissions?, skipVerify?, capture?, parentJobId?, startFrom? }` | `{ id, status, branch }`. `parentJobId`를 주면 그 잡의 지시·세션 요약이 컨텍스트로 붙고, `startFrom: "parent"`면 그 잡 브랜치 위에서 worktree를 시작합니다 (기본 `"base"`). `capture: true`는 `projects.json`에 `captureMethod`가 있는 프로젝트에서만 받습니다 |
 | `GET /api/jobs/:id?since=<n>` | — | 잡 메타 + `since` 이후 로그 (폴링용) |
-| `PATCH /api/jobs/:id` | `{ title?, prompt?, mode?, model?, effort?, maxTurns?, skipVerify?, skipPermissions? }` | 아직 시작하지 않은(`queued`) 잡의 제출 옵션 수정. `model`·`effort`에 빈 문자열을 주면 기본값으로 되돌립니다. 실행이 시작된 잡은 거부 |
+| `PATCH /api/jobs/:id` | `{ title?, prompt?, mode?, model?, effort?, maxTurns?, skipVerify?, capture?, skipPermissions? }` | 아직 시작하지 않은(`queued`) 잡의 제출 옵션 수정. `model`·`effort`에 빈 문자열을 주면 기본값으로 되돌립니다. 실행이 시작된 잡은 거부 |
+| `GET /api/jobs/:id/captures/:name` | — | 그 잡이 남긴 캡처 파일 (`data/jobs/<id>-captures/`). 이미지·동영상만 내려갑니다 |
 | `POST /api/jobs/:id/cancel` | — | 대기·실행 중인 잡 취소 (worktree는 남김) |
 | `POST /api/jobs/:id/resume` | `{ skipVerify? }` | claude 없이 커밋 단계부터 push·PR까지 마무리 |
 | `POST /api/jobs/:id/follow-up` | `{ prompt, asNewJob?, title?, model?, effort?, maxTurns?, skipVerify? }` | 그 잡의 claude 세션을 재개해 추가 지시를 수행합니다. `asNewJob: true`면 worktree·브랜치·PR·세션을 공유하는 새 잡을 만들어 그 id를 돌려줍니다 |

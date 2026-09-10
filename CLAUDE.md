@@ -17,7 +17,7 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 | `lib/proc.ts` | 외부 프로세스 실행 공용 유틸 — 프로세스 그룹 종료 + 워치독(상한·무출력 정지). jobs·worktree-gc 공용 |
 | `lib/worktree-gc.ts` | 워커 잔여물 GC — 보관 기한 지난 worktree·로컬/원격 `agent/*` 브랜치 정리 정책 |
 | `lib/notify.ts` | Slack(Block Kit)·Discord 웹훅 알림 — 공급자 중립 `Notice` → `toSlack`/`toDiscord` (미설정 시 no-op) |
-| `lib/screenshot.ts` | 워커 PC 화면 캡처 |
+| `lib/screenshot.ts` | 워커 PC 화면 상태 확인용 캡처 (잡 산출물 캡처는 `lib/jobs.ts`의 capture 단계) |
 | `lib/tunnel.ts` | ngrok 공개 URL |
 | `app/api/**` | REST 엔드포인트 (`jobs`, `screenshots` 포함) |
 | `components/PlanBoard.tsx` | 보드 UI |
@@ -38,7 +38,12 @@ Next.js 15 (App Router) + React 19 + TypeScript. 웹 계획표 보드에서 Clau
 
 **플랜 착수**: 플랜에 `project`(projects.json 키)가 있으면 착수는 잡 파이프라인을 탄다(`submitJob({ planId, taskIds })`) — 실행 지시문은 worktree·브랜치가 정해진 뒤 `buildPlanJobPrompt`가 조립하고, 진행 마커는 `lib/plan-run.ts`가 플랜에 반영한다. `project`가 없는 레거시 플랜만 `lib/runner.ts`로 간다. 두 경로 모두 지시문·마커 로직을 각자 복제하지 말고 `lib/plan-run.ts`를 쓴다. PR/직푸시 선택은 계획표 액션바(착수 시점)에 있다 — 플랜 생성 시점으로 옮기지 않는다.
 
-**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `lib/proc.ts`의 `spawnWatched`(상한 + 무출력 정지 워치독, 프로세스 그룹 종료)를 거친다 — 여기를 우회하는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용) — 이 값은 보드의 직푸시 허용 체크박스(`PATCH /api/projects/:key` → `setProjectAllowDirect`)로 바꾼다. 앱이 `config/projects.json`에 쓰는 경로는 이 함수 하나뿐이고 `allowDirect` 외의 필드는 쓰지 않는다 — 경로·Unity 설정을 API로 열지 않는다. 대기 중(`queued`) 잡의 제출 옵션만 `updateQueuedJob`이 고칠 수 있다 — 실행이 시작된 잡의 상태·옵션은 건드리지 않는다(플랜 착수 잡의 지시문은 계획표가 소유하므로 수정 대상에서 뺀다). Unity 검증 생략은 잡의 `skipVerify`(제출·수정 시)와 `job_resume`의 재개 옵션 둘 다에서 오고, `runJob`이 둘을 OR로 합쳐 판단한다. 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
+**워커 잡**: `lib/jobs.ts`는 셸 문자열 보간 없이 인자 배열로만 `git`/`gh`/`claude`를 스폰한다 (잡 제목·프롬프트는 신뢰 입력이 아니다). 모든 외부 프로세스는 `lib/proc.ts`의 `spawnWatched`(상한 + 무출력 정지 워치독, 프로세스 그룹 종료)를 거친다 — 여기를 우회하는 스폰을 추가하지 않는다. `pr` 모드는 **커밋 직후 push, 검증은 그 뒤**다(원격 보존이 우선) — 순서를 바꾸지 않는다. `direct` 모드는 `projects.json`의 `allowDirect: false`로만 잠긴다(기본 허용) — 이 값은 보드의 직푸시 허용 체크박스(`PATCH /api/projects/:key` → `setProjectAllowDirect`)로 바꾼다. 앱이 `config/projects.json`에 쓰는 경로는 이 함수 하나뿐이고 `allowDirect` 외의 필드는 쓰지 않는다 — 경로·Unity 설정을 API로 열지 않는다. 대기 중(`queued`) 잡의 제출 옵션만 `updateQueuedJob`이 고칠 수 있다 — 실행이 시작된 잡의 상태·옵션은 건드리지 않는다(플랜 착수 잡의 지시문은 계획표가 소유하므로 수정 대상에서 뺀다). Unity 검증 생략은 잡의 `skipVerify`(제출·수정 시)와 `job_resume`의 재개 옵션 둘 다에서 오고, `runJob`이 둘을 OR로 합쳐 판단한다. Unity 검증 판정은 **종료 코드가 아니라 로그**로 한다 — 컴파일이 끝났는데 에디터가 종료되지 못하는 경우가 있어, 판정이 서면 유예 후 프로세스를 정리하고 그 판정을 그대로 쓴다. 이 순서를 되돌리지 않는다. 잡 상태 전이(`queued → running → succeeded|failed|cancelled`)와 단계(`stage`)는 `runJob`이 소유하고, 실패·취소한 잡은 worktree를 남겨 `resumeJob`이 커밋 단계부터 이어 간다. `mcp/worker.mjs`는 `WORKER_TOKEN` 없이는 기동을 거부한다 — 이 검사를 빼지 않는다.
+
+
+**Unity 인스턴스**: worktree에서 Unity를 띄우기 전 반드시 `isolateUnityMcp`로 그 worktree의 `UserSettings/`에 MCP 브리지 연결 차단 설정을 쓴다 — 이걸 빼면 worktree 인스턴스가 사용자가 열어 둔 에디터의 브리지 연결을 뺏고, 재연결을 반복해 `-quit`가 끝나지 않는다. 대상 리포의 `UserSettings/`는 gitignore라 커밋을 더럽히지 않는다. 이 앱이 대상 리포에 쓰는 경로는 여기 하나뿐이다.
+
+**화면 캡처**: 배치모드(`-nographics`)는 렌더링이 없어 스크린샷·녹화를 못 남긴다. `capture`가 켜진 잡만 검증 뒤 **같은 worktree**에서 에디터를 GUI로 띄워(`-executeMethod <captureMethod>`) 산출물을 만든다 — 검증과 순서를 바꾸면 Library가 warm인 이점이 사라진다. 대상 리포와의 계약은 환경변수 `AGENT_CAPTURE_OUT`(산출물 폴더)·`AGENT_CAPTURE_JOB`과 로그 표시 `AGENT_CAPTURE_DONE`/`AGENT_CAPTURE_FAIL`이다 — 완료 판정을 종료 코드로 바꾸지 않는다. 산출물은 worktree 밖 `data/jobs/<id>-captures/`에 모은다. 캡처 실패는 `captureError`만 남기고 잡을 실패시키지 않는다. OS 화면 캡처(`lib/screenshot.ts`)를 잡 산출물로 쓰지 않는다 — 사용자의 다른 창이 섞이고 창 가림에 흔들린다.
 
 **잡 이어가기**: 세 경로를 섞지 않는다. `resumeJob`은 claude를 다시 돌리지 않고 커밋 단계부터(보드: "커밋부터 마무리"), `followUpJob`은 같은 worktree에서 세션을 재개해 추가 지시를 수행하고(보드: "이어서하기"), 이전 잡을 컨텍스트로만 참조하는 새 세션은 `submitJob({ parentJobId, startFrom })`이다. 세션 id는 `lib/stream-json.ts`가 stream-json에서 뽑아 `job.sessionId`에 남기며, 이어서하기는 `--resume`(id가 없으면 그 worktree의 `--continue`)를 쓴다 — 이 폴백을 없애면 세션 id 이전 잡을 못 잇는다. 이어서하기를 새 잡 카드로 분리하면 worktree·브랜치·PR·세션을 **공유**하므로, GC의 활성 잡 보호(`lib/worktree-gc.ts`의 경로별 대표 잡 선택)와 worktree 삭제 표시(`markWorktreeRemoved`의 공유 잡 전파)를 함께 유지한다.
 

@@ -5,6 +5,7 @@
     "allowDirect": true,
     "unityMcpPort": 8085,
     "unityPath": "/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/MacOS/Unity",
+    "captureMethod": "AgentCaptureRun.Run",
     "seedUnityLibrary": true,
     "defaultModel": "opus",
     "defaultEffort": "high"

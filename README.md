@@ -89,7 +89,7 @@ npm run dev:lan    # 0.0.0.0 바인드
 
 ## 원격 워커 — 이 PC를 서브 PC로
 
-다른 PC의 Claude Code가 **HTTP MCP**로 이 PC에 작업을 제출하면, worktree를 파서 `claude -p`를 돌리고 커밋 → (Unity 컴파일 검증) → PR 생성 또는 기본 브랜치 직푸시까지 끝낸 뒤 Slack/Discord로 알립니다. Unity처럼 프로젝트당 에디터 인스턴스가 하나뿐인 환경을 위한 구성입니다.
+다른 PC의 Claude Code가 **HTTP MCP**로 이 PC에 작업을 제출하면, worktree를 파서 `claude -p`를 돌리고 커밋 → (Unity 컴파일 검증) → (화면 캡처) → PR 생성 또는 기본 브랜치 직푸시까지 끝낸 뒤 Slack/Discord로 알립니다. Unity처럼 프로젝트당 에디터 인스턴스가 하나뿐인 환경을 위한 구성입니다.
 
 ```bash
 cp .env.example .env.local                          # WORKER_TOKEN 필수 (openssl rand -hex 24), SLACK_WEBHOOK_URL
@@ -108,7 +108,7 @@ claude mcp add --transport http mac-worker http://macmini-macmini:4000/mcp --hea
 
 Claude Desktop처럼 헤더를 못 붙이는 호스트는 stdio 브리지 `mcp/worker-client.mjs`(`WORKER_URL`, `WORKER_TOKEN` env)를 등록하면 됩니다. 메인 PC의 Claude가 워커를 어떻게 써야 하는지는 `skills/remote-worker`를 `~/.claude/skills/`에 복사해 알려줍니다.
 
-툴: `worker_projects` · `job_submit`(즉시 jobId 반환, `mode`/`model`/`effort` 선택) · `job_status` · `job_logs` · `job_list` · `job_cancel` · `job_resume`(실패한 잡을 push·PR까지 이어서 마무리) · `worker_screenshot` · `worker_cleanup`. 모든 외부 프로세스에 워치독이 붙어 조용히 멈추는 잡이 없고, `pr` 모드는 검증 전에 push해 작업물을 먼저 원격에 남깁니다. 확인용으로 남긴 worktree와 머지된 `agent/*` 브랜치는 보관 기한(기본 48시간)이 지나면 자동으로 정리돼 로컬·원격에 잔여물이 쌓이지 않습니다. 진행 상황은 보드 `/jobs`에서도 볼 수 있고, 끝난 잡은 상세 화면에서 **이어서하기**(그 세션을 `claude --resume`으로 재개해 추가 지시)나 **새 세션**(이전 지시·요약을 컨텍스트로 물려받는 새 잡)으로 이어 갈 수 있습니다. 자세한 설정·운영은 [원격 워커 문서](https://cykim.gitbook.io/claude-better-plan/integration/worker)와 `docs/remote-worker-runbook.md`를 보세요.
+툴: `worker_projects` · `job_submit`(즉시 jobId 반환, `mode`/`model`/`effort`/`capture` 선택) · `job_status` · `job_logs` · `job_list` · `job_cancel` · `job_resume`(실패한 잡을 push·PR까지 이어서 마무리) · `worker_screenshot` · `worker_cleanup`. 모든 외부 프로세스에 워치독이 붙어 조용히 멈추는 잡이 없고, `pr` 모드는 검증 전에 push해 작업물을 먼저 원격에 남깁니다. 확인용으로 남긴 worktree와 머지된 `agent/*` 브랜치는 보관 기한(기본 48시간)이 지나면 자동으로 정리돼 로컬·원격에 잔여물이 쌓이지 않습니다. 결과를 눈으로 봐야 하는 작업은 `capture`를 켜면 검증 뒤 에디터를 GUI로 띄워 스크린샷·녹화를 남기고 잡 상세·PR 본문에 붙여 줍니다 (배치모드는 렌더링이 없어 화면을 못 남깁니다). 진행 상황은 보드 `/jobs`에서도 볼 수 있고, 끝난 잡은 상세 화면에서 **이어서하기**(그 세션을 `claude --resume`으로 재개해 추가 지시)나 **새 세션**(이전 지시·요약을 컨텍스트로 물려받는 새 잡)으로 이어 갈 수 있습니다. 자세한 설정·운영은 [원격 워커 문서](https://cykim.gitbook.io/claude-better-plan/integration/worker)와 `docs/remote-worker-runbook.md`를 보세요.
 
 ## 운영 스크립트 (macOS 전용)
 
@@ -165,11 +165,11 @@ lib/store.ts    data/ 디렉토리 JSON 파일 스토어
 lib/agent.ts    Agent SDK로 플랜 생성·코멘트 반영(revise)
 lib/plan-run.ts 착수 지시문 조립 + 진행 마커 → 태스크 상태 반영 (runner·jobs 공용)
 lib/runner.ts   경로만 지정된 플랜의 착수 — claude -p 스폰, 런 레지스트리(인메모리)
-lib/jobs.ts     원격 워커 잡 — 프로젝트별 큐, worktree → claude -p → 커밋 → 검증 → push/PR
+lib/jobs.ts     원격 워커 잡 — 프로젝트별 큐, worktree → claude -p → 커밋 → 검증 → 캡처 → push/PR
 lib/proc.ts     외부 프로세스 실행 공용 유틸 (프로세스 그룹 종료 + 워치독)
 lib/worktree-gc.ts  남은 worktree·agent 브랜치 자동 정리(GC)
 lib/notify.ts   Slack(Block Kit)·Discord 웹훅 알림 (공급자 중립 Notice)
-lib/screenshot.ts  워커 PC 화면 캡처 (macOS screencapture / Windows PowerShell)
+lib/screenshot.ts  워커 PC 화면 상태 확인용 캡처 (macOS screencapture / Windows PowerShell)
 app/api/...     REST 엔드포인트 (plans, comments, revise, execute, runs, jobs, screenshots)
 components/PlanBoard.tsx  계획표 보드 UI (코멘트·반영·부분 착수·로그)
 components/JobList.tsx · JobView.tsx  워커 잡 목록·상세(로그 스트림)
