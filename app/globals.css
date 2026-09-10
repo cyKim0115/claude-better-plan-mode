@@ -321,3 +321,20 @@ details.history summary { cursor: pointer; color: var(--muted); font-size: 12px;
 .task.queued { border-style: dashed; }
 .task.done { opacity: 0.75; }
 .task.failed { border-color: var(--red); }
+
+/* ── 착수 진행 중 표시 ──────────────────────────────────────── */
+/* 이번 착수 대상이 아닌 태스크 */
+.task.dimmed { opacity: 0.4; }
+/* 체크박스를 감췄을 때 본문 정렬을 유지하는 자리 */
+.task-head .task-mark { width: 15px; flex: none; }
+
+a.link-button {
+  display: inline-block;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--accent);
+}
+a.link-button:hover { border-color: var(--accent); text-decoration: none; }

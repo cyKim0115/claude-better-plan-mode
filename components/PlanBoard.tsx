@@ -79,10 +79,13 @@ export default function PlanBoard({ planId }: { planId: string }) {
 
   // 서버에서 진행 중인 run (다른 탭에서 착수했거나 새로고침한 경우도 잡힌다)
   const liveRun = runs.find((r) => ACTIVE_RUN_STATUSES.includes(r.status)) ?? null;
+  // 이번에 도는 run — 착수 직후엔 아직 목록에 없을 수 있어 activeRunId도 함께 본다
+  const activeRun = runs.find((r) => r.id === activeRunId) ?? liveRun ?? null;
+  const executing = Boolean(activeRunId || liveRun);
 
   // 실행/생성 중에는 2초, 아니면 10초 간격으로 갱신.
   // 느린 폴링이 있어야 MCP나 다른 탭에서 착수한 run도 보드가 알아챈다.
-  const busy = Boolean(activeRunId || liveRun || plan?.generating);
+  const busy = executing || Boolean(plan?.generating);
   useEffect(() => {
     const t = setInterval(load, busy ? 2000 : 10000);
     return () => clearInterval(t);
@@ -163,7 +166,12 @@ export default function PlanBoard({ planId }: { planId: string }) {
   const project = projects.find((p) => p.key === plan.project);
 
   // 사이드 진행 패널이 볼 run — 진행 중인 것 우선, 없으면 가장 최근 run
-  const focusRun = runs.find((r) => r.id === activeRunId) ?? liveRun ?? runs[0] ?? null;
+  const focusRun = activeRun ?? runs[0] ?? null;
+  // 착수·생성 중에는 계획을 건드리지 못하게 잠근다
+  // (도는 중에 revise가 태스크를 갈아엎으면 진행 마커가 갈 곳을 잃는다)
+  const locked = busy;
+  // 이번 착수 대상 — 나머지 태스크는 딤 처리해서 구분한다
+  const runningTaskIds = new Set(executing ? activeRun?.taskIds ?? [] : []);
 
   return (
     <div className="board-layout">
@@ -216,6 +224,9 @@ export default function PlanBoard({ planId }: { planId: string }) {
                 depTitles={t.dependsOn.map((d) => taskById.get(d)?.title ?? "?")}
                 comments={plan.comments.filter((c) => c.taskId === t.id)}
                 checked={selected.has(t.id)}
+                selectable={!executing}
+                dimmed={executing && !runningTaskIds.has(t.id)}
+                locked={locked}
                 onToggle={() => toggle(t.id)}
                 onComment={(text) => addComment(t.id, text)}
                 onDeleteComment={deleteComment}
@@ -228,61 +239,76 @@ export default function PlanBoard({ planId }: { planId: string }) {
       <h2>플랜 전체 코멘트</h2>
       <div className="card">
         {plan.comments.filter((c) => c.taskId === null).map((c) => (
-          <CommentView key={c.id} comment={c} onDelete={() => deleteComment(c.id)} />
+          <CommentView key={c.id} comment={c} locked={locked} onDelete={() => deleteComment(c.id)} />
         ))}
         <div className="row" style={{ marginTop: 8 }}>
           <input
             type="text"
             className="grow"
-            placeholder="계획 전반에 대한 첨언… (예: 테스트 태스크를 각 단계마다 넣어줘)"
+            placeholder={locked ? "착수가 끝나면 다시 입력할 수 있습니다" : "계획 전반에 대한 첨언… (예: 테스트 태스크를 각 단계마다 넣어줘)"}
             value={planComment}
+            disabled={locked}
             onChange={(e) => setPlanComment(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") { addComment(null, planComment); setPlanComment(""); }
             }}
           />
-          <button className="tiny" onClick={() => { addComment(null, planComment); setPlanComment(""); }}>추가</button>
+          <button className="tiny" disabled={locked} onClick={() => { addComment(null, planComment); setPlanComment(""); }}>추가</button>
         </div>
       </div>
 
       <div className="actionbar">
-        <button className="primary" onClick={revise} disabled={revising || openComments.length === 0 || plan.generating}>
+        <button className="primary" onClick={revise} disabled={revising || openComments.length === 0 || locked}>
           {revising ? <><span className="spinner" /> 반영 중…</> : `코멘트 ${openComments.length}건 계획에 반영`}
         </button>
         <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
-        <button className="primary" onClick={execute} disabled={selected.size === 0 || revising || plan.generating}>
-          선택한 {selected.size}개 태스크 착수 ▶
+        <button className="primary" onClick={execute} disabled={selected.size === 0 || revising || locked}>
+          {executing ? <><span className="spinner" /> 착수 진행 중…</> : `선택한 ${selected.size}개 태스크 착수 ▶`}
         </button>
 
         <select
           value={mode}
           onChange={(e) => setMode(e.target.value as JobMode)}
-          disabled={!plan.project}
-          title={plan.project ? "결과 처리 방식" : "프로젝트가 지정된 플랜에서만 선택할 수 있습니다"}
+          disabled={locked || !plan.project}
+          title={
+            locked
+              ? "착수가 도는 동안에는 바꿀 수 없습니다"
+              : plan.project
+                ? "결과 처리 방식"
+                : "프로젝트가 지정된 플랜에서만 선택할 수 있습니다"
+          }
         >
           <option value="pr">PR 생성</option>
           <option value="direct" disabled={project ? !project.allowDirect : false}>
             {project?.baseBranch ?? "기본 브랜치"} 직푸시{project && !project.allowDirect ? " (잠김)" : ""}
           </option>
         </select>
-        <select value={model} onChange={(e) => setModel(e.target.value)} title="실행 모델">
+        <select value={model} onChange={(e) => setModel(e.target.value)} disabled={locked} title="실행 모델">
           {MODEL_PRESETS.map((m) => (
             <option key={m} value={m}>
               {m ? `모델: ${m}` : `모델: 기본${project?.defaultModel ? ` (${project.defaultModel})` : ""}`}
             </option>
           ))}
         </select>
-        <select value={effort} onChange={(e) => setEffort(e.target.value)} title="추론 레벨">
+        <select value={effort} onChange={(e) => setEffort(e.target.value)} disabled={locked} title="추론 레벨">
           <option value="">effort: 기본{project?.defaultEffort ? ` (${project.defaultEffort})` : ""}</option>
           {efforts.map((ef) => (
             <option key={ef} value={ef}>effort: {ef}</option>
           ))}
         </select>
         <label className="row small muted" style={{ gap: 4 }}>
-          <input type="checkbox" checked={skipPerms} onChange={(e) => setSkipPerms(e.target.checked)} />
+          <input type="checkbox" checked={skipPerms} disabled={locked} onChange={(e) => setSkipPerms(e.target.checked)} />
           권한 확인 생략 (--dangerously-skip-permissions)
         </label>
       </div>
+      {executing && (
+        <p className="small muted" style={{ marginTop: 6 }}>
+          착수가 진행 중입니다. 끝날 때까지 코멘트·계획 반영·착수 옵션은 잠깁니다.
+          {focusRun?.kind === "job" && (
+            <> <a href={`/jobs/${focusRun.id}`}>잡 상세에서 로그 보기 →</a></>
+          )}
+        </p>
+      )}
       <p className="small muted" style={{ marginTop: 6 }}>
         {plan.project
           ? `착수하면 ${plan.project} worktree에서 실행한 뒤 ${mode === "pr" ? "브랜치를 push하고 PR을 만듭니다" : `${project?.baseBranch ?? "기본 브랜치"}에 바로 반영합니다`}.`
@@ -392,9 +418,16 @@ function RunProgress({ run, tasks }: { run: RunView; tasks: PlanTask[] }) {
         {counts.failed > 0 && <span style={{ color: "var(--red)" }}>실패 {counts.failed}</span>}
         {counts.queued > 0 && <span>대기 {counts.queued}</span>}
       </div>
-      {run.prUrl && (
-        <div className="small" style={{ marginTop: 6 }}>
-          <a href={run.prUrl} target="_blank" rel="noreferrer">PR 열기</a>
+      {(run.kind === "job" || run.prUrl) && (
+        <div className="row" style={{ marginTop: 8, gap: 6 }}>
+          {run.kind === "job" && (
+            <a className="link-button" href={`/jobs/${run.id}`} title="이 착수를 돌리는 잡의 로그·조작 화면">
+              잡 상세 열기 →
+            </a>
+          )}
+          {run.prUrl && (
+            <a className="link-button" href={run.prUrl} target="_blank" rel="noreferrer">PR 열기 ↗</a>
+          )}
         </div>
       )}
     </div>
@@ -410,12 +443,18 @@ function statusMark(status: TaskStatus): string {
 }
 
 function TaskCard({
-  task, depTitles, comments, checked, onToggle, onComment, onDeleteComment,
+  task, depTitles, comments, checked, selectable, dimmed, locked, onToggle, onComment, onDeleteComment,
 }: {
   task: PlanTask;
   depTitles: string[];
   comments: PlanComment[];
   checked: boolean;
+  /** 착수 대상을 고를 수 있는 상태 (착수가 도는 동안에는 false) */
+  selectable: boolean;
+  /** 이번 착수 대상이 아닌 태스크 */
+  dimmed: boolean;
+  /** 착수·생성 중 — 코멘트 입력을 막는다 */
+  locked: boolean;
   onToggle: () => void;
   onComment: (text: string) => void;
   onDeleteComment: (id: string) => void;
@@ -423,6 +462,8 @@ function TaskCard({
   const [text, setText] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
   const executable = task.status === "pending" || task.status === "failed";
+  // 누를 수 없는 체크박스는 아예 보여 주지 않는다 (착수 중이거나 이미 처리된 태스크)
+  const showCheckbox = selectable && executable;
 
   function submit() {
     if (!text.trim()) return;
@@ -431,9 +472,13 @@ function TaskCard({
   }
 
   return (
-    <div className={`task ${checked ? "selected" : ""} ${task.status}`}>
+    <div className={`task ${checked && selectable ? "selected" : ""} ${task.status} ${dimmed ? "dimmed" : ""}`}>
       <div className="task-head">
-        <input type="checkbox" checked={checked} onChange={onToggle} disabled={!executable} title={executable ? "착수 대상으로 선택" : "이미 처리된 태스크"} />
+        {showCheckbox ? (
+          <input type="checkbox" checked={checked} onChange={onToggle} title="착수 대상으로 선택" />
+        ) : (
+          <span className="task-mark" aria-hidden="true" />
+        )}
         <div className="grow">
           <div className="row spread">
             <span className="task-title">{task.title}</span>
@@ -451,18 +496,19 @@ function TaskCard({
           {showPrompt && <div className="log" style={{ marginTop: 8, maxHeight: 180 }}>{task.prompt}</div>}
 
           {comments.map((c) => (
-            <CommentView key={c.id} comment={c} onDelete={() => onDeleteComment(c.id)} />
+            <CommentView key={c.id} comment={c} locked={locked} onDelete={() => onDeleteComment(c.id)} />
           ))}
           <div className="row" style={{ marginTop: 8 }}>
             <input
               type="text"
               className="grow"
-              placeholder="이 태스크에 코멘트/첨언…"
+              placeholder={locked ? "착수가 끝나면 다시 입력할 수 있습니다" : "이 태스크에 코멘트/첨언…"}
               value={text}
+              disabled={locked}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
             />
-            <button className="tiny" onClick={submit}>추가</button>
+            <button className="tiny" onClick={submit} disabled={locked}>추가</button>
           </div>
         </div>
       </div>
@@ -470,13 +516,15 @@ function TaskCard({
   );
 }
 
-function CommentView({ comment, onDelete }: { comment: PlanComment; onDelete: () => void }) {
+function CommentView({ comment, locked = false, onDelete }: { comment: PlanComment; locked?: boolean; onDelete: () => void }) {
   return (
     <div className={`comment ${comment.resolved ? "resolved" : ""}`}>
       <div className="who">
         {comment.author} · {new Date(comment.createdAt).toLocaleString()}
         {comment.resolved && ` · rev ${comment.resolvedInRevision}에 반영됨`}
-        {!comment.resolved && <button className="tiny danger" style={{ marginLeft: 8 }} onClick={onDelete}>삭제</button>}
+        {!comment.resolved && (
+          <button className="tiny danger" style={{ marginLeft: 8 }} disabled={locked} onClick={onDelete}>삭제</button>
+        )}
       </div>
       {comment.text}
     </div>
@@ -540,7 +588,7 @@ function JobPanel({ run, onFinished }: { run: RunView; onFinished: () => void })
           <span className="small muted">
             {run.mode === "direct" ? "직푸시" : "PR"}{run.branch ? ` · ${run.branch}` : ""}
           </span>
-          <a className="small" href={`/jobs/${jobId}`}>상세</a>
+          <a className="link-button" href={`/jobs/${jobId}`}>잡 상세 →</a>
           {run.prUrl && <a className="small" href={run.prUrl} target="_blank" rel="noreferrer">PR</a>}
         </div>
         <span className={`badge ${badgeClass}`}>
